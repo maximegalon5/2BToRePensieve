@@ -108,10 +108,10 @@ You can also just paste raw text, URLs, or notes. The system extracts entities, 
 
 **Ask your AI assistant:**
 
-- "Tell me about [person/project/concept]" — uses `get_entity` to pull full context (WIP: direct entity lookup by name may return null; semantically this still works because the AI falls back to `search_brain`, which reliably finds the entity and its observations)
-- "What's connected to [entity]?" — uses `explore_neighborhood` to traverse relations (WIP: depends on `get_entity`; the AI compensates by using `search_brain` to find related entities and observations)
-- "List all the people in my knowledge graph" — uses `list_entities` (works reliably)
-- "What are my most recent projects?" — uses `list_entities` (works reliably)
+- "Tell me about [person/project/concept]" — uses `get_entity` to pull full context
+- "What's connected to [entity]?" — uses `explore_neighborhood` to traverse relations
+- "List all the people in my knowledge graph"
+- "What are my most recent projects?"
 
 ### Entity types
 

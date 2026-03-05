@@ -183,28 +183,36 @@ async function searchBrain(args: Record<string, unknown>) {
 async function getEntity(args: Record<string, unknown>) {
   const nameOrId = args.name_or_id as string;
 
-  let { data: entity } = await supabase
-    .from("entities")
-    .select("*")
-    .eq("id", nameOrId)
-    .single();
+  // Try UUID lookup first (only if it looks like a UUID)
+  let entity: Record<string, unknown> | null = null;
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+  if (uuidRegex.test(nameOrId)) {
+    const { data, error } = await supabase
+      .from("entities")
+      .select("*")
+      .eq("id", nameOrId)
+      .single();
+    if (!error) entity = data;
+  }
 
   if (!entity) {
-    const { data: byName } = await supabase
+    const { data: byName, error } = await supabase
       .from("entities")
       .select("*")
       .ilike("name", `%${nameOrId}%`)
       .limit(1);
-    entity = byName?.[0];
+    if (!error && byName?.length) entity = byName[0];
   }
 
   if (!entity) return { error: `Entity not found: ${nameOrId}` };
 
-  const { data: context } = await supabase.rpc("get_entity_context", {
+  const { data: context, error: rpcError } = await supabase.rpc("get_entity_context", {
     target_entity_id: entity.id,
     depth: 1,
   });
 
+  if (rpcError) return { error: `RPC error: ${rpcError.message}` };
   return context;
 }
 
@@ -212,11 +220,12 @@ async function exploreNeighborhood(args: Record<string, unknown>) {
   const entityId = args.entity_id as string;
   const depth = (args.depth as number) || 1;
 
-  const { data } = await supabase.rpc("get_entity_context", {
+  const { data, error } = await supabase.rpc("get_entity_context", {
     target_entity_id: entityId,
     depth,
   });
 
+  if (error) return { error: `RPC error: ${error.message}` };
   return data;
 }
 

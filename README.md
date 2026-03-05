@@ -335,7 +335,7 @@ Issues identified during code review (2026-03-04). Fixes in progress.
 
 | # | Severity | Component | Issue |
 |---|----------|-----------|-------|
-| 5 | Important | `mcp-server` | `get_entity` silently returns `null` on RPC error instead of an error message. |
+| 5 | ~~Important~~ | `mcp-server` | ~~`get_entity` silently returns `null` on RPC error instead of an error message.~~ **Fixed.** Root cause: SQL bug in `get_entity_context` RPC (ORDER BY outside jsonb_agg) + swallowed error in TypeScript. |
 | 6 | Important | `config.toml` | References `seed.sql` that doesn't exist — `supabase db reset` will fail locally. |
 | 7 | ~~Important~~ | `requirements.txt` | ~~Missing `ijson` dependency — ChatGPT connector fails on fresh install.~~ **Fixed.** |
 | 8 | Important | `daily-sync.yml` | `NOTION_DATABASE_ID` injected unquoted into shell command. |

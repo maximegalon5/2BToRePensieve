@@ -189,11 +189,14 @@ begin
                 'type', o.observation_type,
                 'metadata', o.metadata,
                 'created_at', o.created_at
-            ))
-            from observations o
-            where target_entity_id = any(o.entity_ids)
-            order by o.created_at desc
-            limit 50
+            ) order by o.created_at desc)
+            from (
+                select *
+                from observations
+                where target_entity_id = any(entity_ids)
+                order by created_at desc
+                limit 50
+            ) o
         ), '[]'::jsonb)
     );
 
