@@ -309,6 +309,36 @@ Ways to extend this that we haven't built yet:
 | **Self-hosted LLM** | Run extraction with Ollama/llama.cpp instead of OpenRouter |
 | **Webhooks out** | Trigger actions when new entities/observations match patterns |
 
+## Known Issues
+
+Issues identified during code review (2026-03-04). Fixes in progress.
+
+### Security
+
+| # | Severity | Component | Issue |
+|---|----------|-----------|-------|
+| 1 | Critical | `mcp-server` | Global `McpServer` instance reconnected per request — may leak state under concurrent sessions. Fix: create server per request via factory function. |
+| 2 | Critical | `slack-capture` | No Slack signing secret verification — any POST to the endpoint is accepted. Fix: add HMAC-SHA256 signature check with `SLACK_SIGNING_SECRET`. |
+| 3 | Critical | `ingest` | No authentication — the endpoint is callable by anyone if the URL is known. Fix: validate service role key in Authorization header. |
+| 4 | Important | `ingest`, `mcp-server` | Embedding API errors (rate limit, bad key) crash with unguarded `.data` access. Fix: check `res.ok` and `data.data` before use. |
+
+### Code & Config
+
+| # | Severity | Component | Issue |
+|---|----------|-----------|-------|
+| 5 | Important | `mcp-server` | `get_entity` silently returns `null` on RPC error instead of an error message. |
+| 6 | Important | `config.toml` | References `seed.sql` that doesn't exist — `supabase db reset` will fail locally. |
+| 7 | Important | `requirements.txt` | Missing `ijson` dependency — ChatGPT connector fails on fresh install. |
+| 8 | Important | `daily-sync.yml` | `NOTION_DATABASE_ID` injected unquoted into shell command. |
+
+### Documentation
+
+| # | Severity | Component | Issue |
+|---|----------|-----------|-------|
+| 9 | Important | `setup-channels.md` | ChatGPT/Claude connector examples use `--file` flag — actual flag is `--in`. |
+| 10 | Important | `setup-channels.md` | `local_sync` documented as continuous watcher with `--interval` flag — it's actually a one-shot scanner. |
+| 11 | Important | `setup-supabase.md` | Verification curl uses old hand-rolled JSON-RPC format — stale after SDK rewrite. |
+
 ## V2.0 Roadmap
 
 What's planned for the next major version:
