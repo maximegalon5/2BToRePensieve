@@ -1,5 +1,7 @@
 # 2BToRePensieve
 
+> **Status (2026-03-05):** Active development. The core system works — ingestion, knowledge graph, MCP server, and daily sync are all functional. Documentation fixes are ongoing (see [Known Issues](#known-issues)). If you find a bug or something doesn't match the docs, open an issue.
+
 **A cloud-hosted personal knowledge graph you can talk to from any AI assistant.**
 
 > *Second Brain + Total Recall + Pensieve* — capture everything, forget nothing, recall instantly.
@@ -137,6 +139,13 @@ pip install supabase openai httpx python-dotenv yt-dlp youtube-transcript-api Py
 cp .env.example .env
 # Edit .env with your credentials
 ```
+
+## Documentation
+
+- **[Usage Guide](docs/usage-guide.md)** — How to use the system day to day: searching, adding thoughts, managing tasks, importing content
+- **[Channel Setup](docs/setup-channels.md)** — How to configure each input channel (Telegram, Email, Notion, YouTube, etc.)
+- **[Supabase Setup](docs/setup-supabase.md)** — Database and Edge Function setup
+- **[Architecture](docs/architecture.md)** — Technical design and data flow
 
 ## MCP Tools
 
@@ -328,15 +337,15 @@ Issues identified during code review (2026-03-04). Fixes in progress.
 |---|----------|-----------|-------|
 | 5 | Important | `mcp-server` | `get_entity` silently returns `null` on RPC error instead of an error message. |
 | 6 | Important | `config.toml` | References `seed.sql` that doesn't exist — `supabase db reset` will fail locally. |
-| 7 | Important | `requirements.txt` | Missing `ijson` dependency — ChatGPT connector fails on fresh install. |
+| 7 | ~~Important~~ | `requirements.txt` | ~~Missing `ijson` dependency — ChatGPT connector fails on fresh install.~~ **Fixed.** |
 | 8 | Important | `daily-sync.yml` | `NOTION_DATABASE_ID` injected unquoted into shell command. |
 
 ### Documentation
 
 | # | Severity | Component | Issue |
 |---|----------|-----------|-------|
-| 9 | Important | `setup-channels.md` | ChatGPT/Claude connector examples use `--file` flag — actual flag is `--in`. |
-| 10 | Important | `setup-channels.md` | `local_sync` documented as continuous watcher with `--interval` flag — it's actually a one-shot scanner. |
+| 9 | ~~Important~~ | `setup-channels.md` | ~~ChatGPT/Claude connector examples use `--file` flag — actual flag is `--in`.~~ **Fixed.** |
+| 10 | ~~Important~~ | `setup-channels.md` | ~~`local_sync` documented as continuous watcher with `--interval` flag — it's actually a one-shot scanner.~~ **Fixed.** |
 | 11 | Important | `setup-supabase.md` | Verification curl uses old hand-rolled JSON-RPC format — stale after SDK rewrite. |
 
 ## V2.0 Roadmap

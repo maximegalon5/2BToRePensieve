@@ -205,9 +205,11 @@ Ingests exported ChatGPT conversation history.
 
 ```bash
 python -m open_brain.connectors.chatgpt_conversations \
-  --file path/to/conversations.json \
+  --in path/to/conversations.json \
   --limit 50
 ```
+
+The connector uses content-hash deduplication — safe to re-run. Already-ingested conversations are skipped automatically. Use `--limit` to process in batches (e.g. 50 at a time) or omit it to process everything.
 
 ---
 
@@ -224,9 +226,11 @@ Ingests exported Claude conversation history.
 
 ```bash
 python -m open_brain.connectors.claude_conversations \
-  --file path/to/conversations.json \
+  --in path/to/conversations.json \
   --limit 50
 ```
+
+Same dedup behavior as ChatGPT — safe to re-run, duplicates are skipped.
 
 ---
 
@@ -243,15 +247,24 @@ python -m open_brain.connectors.local_bulk \
   --limit 100
 ```
 
-### Folder Watch (Continuous Sync)
+### Folder Sync (One-Shot)
 
 ```bash
 python -m open_brain.connectors.local_sync \
-  --watch-dir ~/Documents/brain-inbox \
-  --interval 30
+  --watch-dir ~/Documents/brain-inbox
 ```
 
-Watches a directory and ingests new/modified files every 30 seconds.
+Scans the directory once and ingests all new files. Uses content-hash deduplication — safe to re-run. Already-ingested files are skipped automatically.
+
+To include ChatGPT/Claude conversation exports in the same scan:
+
+```bash
+python -m open_brain.connectors.local_sync \
+  --watch-dir ~/Documents/exports \
+  --include-conversations
+```
+
+Use `--dry-run` to preview what would be processed without ingesting.
 
 ---
 
