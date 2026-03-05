@@ -275,19 +275,20 @@ Set these GitHub Actions secrets:
 
 ## Inspiration
 
-The name **2BToRePensieve** combines three ideas:
+Inspired by [Nate B. Jones' Open Brain guide](https://promptkit.natebjones.com/20260224_uq1_guide_main), which demonstrated the core idea: Supabase + OpenRouter + MCP to give every AI tool you use the same persistent memory via a single URL.
 
-- **Second Brain** — Tiago Forte's concept of an external system that captures, organizes, and surfaces your knowledge so you can focus on thinking, not remembering
-- **Total Recall** — the sci-fi dream of perfect memory retrieval on demand
-- **Pensieve** — Dumbledore's magical basin in Harry Potter where you can store and revisit memories, examining them from any angle
+The problem is simple — your knowledge lives in too many places. Zotero, browser bookmarks, Notion, YouTube watch-later playlists, ChatGPT conversations, Claude chats, Slack threads, emails. None of them talk to each other, and none of them are accessible when you're working in a different tool.
 
-This project draws from several approaches to personal knowledge management:
+2BToRePensieve takes the Open Brain concept and extends it from a Slack capture + 4 MCP tools into a full knowledge graph with:
+- **Entity extraction and resolution** — not just storing text, but building a graph of people, concepts, projects, and their relationships
+- **7 input channels** instead of just Slack — ChatGPT, Claude, Notion, YouTube, Telegram, Email, local files
+- **12 MCP tools** — search, capture, entity exploration, task management, stats
+- **Batched pipeline** — optimized from N LLM calls per entity down to 2-3 calls per chunk
+- **5-layer dedup** — content hash, semantic similarity, entity merge, relation dedup, observation dedup
+- **GTD task system** — embedded in the knowledge graph for cross-referencing
+- **Daily automated sync** — GitHub Actions cron for Notion and YouTube
 
-- [Building a Second Brain](https://www.buildingasecondbrain.com/) (Tiago Forte) — the PARA method and progressive summarization
-- [Zettelkasten](https://zettelkasten.de/) — networked notes with atomic, linked ideas
-- [Getting Things Done](https://gettingthingsdone.com/) (David Allen) — the GTD task system (inbox/next/waiting/someday/done)
-- [Mem](https://mem.ai/) and [Rewind](https://www.rewind.ai/) — AI-powered personal memory tools
-- [Model Context Protocol](https://modelcontextprotocol.io/) — Anthropic's open standard for AI tool access
+The name combines **Second Brain**, **Total Recall**, and **Pensieve** (Harry Potter) — one ring to rule them all.
 
 ## Extensions & Ideas
 
