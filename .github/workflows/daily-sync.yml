@@ -1,0 +1,83 @@
+name: Daily Knowledge Sync
+
+on:
+  schedule:
+    # Run daily at 6 AM UTC (1 AM EST / 10 PM PST)
+    - cron: '0 6 * * *'
+  workflow_dispatch:  # Allow manual trigger
+    inputs:
+      notion_limit:
+        description: 'Max Notion pages to process (0 = use default)'
+        default: '0'
+        type: string
+      youtube_limit:
+        description: 'Max YouTube videos to process (0 = use default)'
+        default: '0'
+        type: string
+
+jobs:
+  sync-notion:
+    name: Sync Notion Database
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install supabase openai httpx python-dotenv PyMuPDF
+
+      - name: Sync Notion pages
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: openai/gpt-4o-mini
+          OPENROUTER_EMBED_MODEL: openai/text-embedding-3-small
+          NOTION_API_TOKEN: ${{ secrets.NOTION_API_TOKEN }}
+        run: |
+          # Default: 50 pages per run during backlog, unlimited once caught up
+          LIMIT="${{ github.event.inputs.notion_limit || '50' }}"
+          python -m open_brain.connectors.notion_database \
+            --database-id ${{ secrets.NOTION_DATABASE_ID }} \
+            --token "$NOTION_API_TOKEN" \
+            --sync \
+            --limit "$LIMIT" \
+            --delay 1.5
+
+  sync-youtube:
+    name: Sync YouTube Playlist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install supabase openai yt-dlp youtube-transcript-api python-dotenv
+
+      - name: Sync YouTube playlist
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: openai/gpt-4o-mini
+          OPENROUTER_EMBED_MODEL: openai/text-embedding-3-small
+        run: |
+          # Default: 10 videos per run during backlog (each video = multiple chunks)
+          LIMIT="${{ github.event.inputs.youtube_limit || '10' }}"
+          python -m open_brain.connectors.youtube \
+            --playlist "${{ secrets.YOUTUBE_PLAYLIST_URL }}" \
+            --sync \
+            --limit "$LIMIT" \
+            --delay 2.0

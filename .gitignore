@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Supabase local
+supabase/.temp/
+
+# Backup dumps (keep the script, not the data)
+open_brain/backup/dumps/
+
+# Node modules (Edge Functions)
+node_modules/
+
+# Logs
+*.log

@@ -1,0 +1,466 @@
+// Open Brain Telegram Capture — Supabase Edge Function
+// Conversational agent: saves messages, searches knowledge graph, replies via LLM.
+
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+
+const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
+const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
+const TELEGRAM_WEBHOOK_SECRET = Deno.env.get("TELEGRAM_WEBHOOK_SECRET") || "";
+const OPENROUTER_KEY = Deno.env.get("OPENROUTER_API_KEY") || "";
+const EMBED_MODEL = Deno.env.get("OPENROUTER_EMBED_MODEL") || "openai/text-embedding-3-small";
+const CHAT_MODEL = Deno.env.get("OPENROUTER_CHAT_MODEL") || "openai/gpt-4o-mini";
+const ALLOWED_USERS = (Deno.env.get("TELEGRAM_ALLOWED_USERS") || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+if (!TELEGRAM_WEBHOOK_SECRET) {
+  console.warn("TELEGRAM_WEBHOOK_SECRET is not set — webhook is unauthenticated");
+}
+if (!OPENROUTER_KEY) {
+  console.warn("OPENROUTER_API_KEY is not set — search/LLM replies will fail");
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function sendTelegramReply(chatId: number, text: string) {
+  if (!TELEGRAM_BOT_TOKEN) return;
+  try {
+    const res = await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ chat_id: chatId, text }),
+      },
+    );
+    if (!res.ok) {
+      const body = await res.text();
+      console.error("Telegram reply failed:", res.status, body);
+    }
+  } catch (err) {
+    console.error("Telegram reply error:", err);
+  }
+}
+
+// --- Knowledge Graph Helpers ---
+
+async function embedQuery(text: string): Promise<number[]> {
+  const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENROUTER_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ model: EMBED_MODEL, input: [text] }),
+  });
+  if (!res.ok) throw new Error(`Embedding failed: ${res.status}`);
+  const data = await res.json();
+  if (!data?.data?.[0]?.embedding) {
+    throw new Error(`Embedding response malformed: ${JSON.stringify(data).slice(0, 200)}`);
+  }
+  return data.data[0].embedding;
+}
+
+async function searchBrain(query: string, limit = 5) {
+  const embedding = await embedQuery(query);
+  const { data, error } = await supabase.rpc("search_knowledge", {
+    query_embedding: embedding,
+    match_count: limit,
+    filter_entity_type: null,
+    filter_observation_type: null,
+  });
+  if (error) {
+    console.error("search_knowledge error:", error.message);
+    return [];
+  }
+  return data || [];
+}
+
+async function generateReply(
+  userMsg: string,
+  context: { name?: string; content?: string; result_type?: string; similarity?: number }[],
+): Promise<string> {
+  const contextBlock = context.length > 0
+    ? context
+        .map((r) =>
+          r.result_type === "entity"
+            ? `[Entity] ${r.name}: ${r.content || "no description"}`
+            : `[Observation] ${r.content}`
+        )
+        .join("\n")
+    : "No relevant context found.";
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENROUTER_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      max_tokens: 120,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are Open Brain, a concise knowledge assistant. The user just saved a thought. " +
+            "Using the context below from their knowledge graph, give a brief, useful reply. " +
+            "MAXIMUM 250 CHARACTERS. If nothing relevant found, just confirm the save.\n\n" +
+            "Knowledge graph context:\n" +
+            contextBlock,
+        },
+        { role: "user", content: userMsg },
+      ],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`LLM failed: ${res.status}`);
+  const data = await res.json();
+  const reply = (data.choices?.[0]?.message?.content || "").trim();
+  if (!reply) throw new Error("LLM returned empty response");
+  // Hard truncate as safety net
+  return reply.length > 250 ? reply.slice(0, 247) + "..." : reply;
+}
+
+// --- Task Helpers ---
+
+async function addTaskFromTelegram(text: string): Promise<string> {
+  // Parse: /task [p1-4] [#project] [@context] [!personal|!professional] title
+  let title = text;
+  let priority = 0;
+  let project = "";
+  let context = "";
+  let category = "personal";
+
+  // Extract priority: p1, p2, p3, p4
+  const priorityMatch = title.match(/\bp([1-4])\b/i);
+  if (priorityMatch) {
+    priority = parseInt(priorityMatch[1]);
+    title = title.replace(priorityMatch[0], "").trim();
+  }
+
+  // Extract project: #project-name
+  const projectMatch = title.match(/#(\S+)/);
+  if (projectMatch) {
+    project = projectMatch[1].replace(/-/g, " ");
+    title = title.replace(projectMatch[0], "").trim();
+  }
+
+  // Extract context: @home, @work, @errands, @computer
+  const contextMatch = title.match(/@(\S+)/);
+  if (contextMatch) {
+    context = "@" + contextMatch[1];
+    title = title.replace(contextMatch[0], "").trim();
+  }
+
+  // Extract category: !professional or !work
+  if (/!prof|!work/i.test(title)) {
+    category = "professional";
+    title = title.replace(/!(?:prof(?:essional)?|work)/i, "").trim();
+  }
+
+  if (!title) return "❌ Need a task title. Usage: /task Buy groceries";
+
+  // Embed for search
+  const embeddingText = `${title}${project ? " [" + project + "]" : ""}`;
+  let embedding: number[] | null = null;
+  try {
+    embedding = await embedQuery(embeddingText);
+  } catch {
+    // Continue without embedding
+  }
+
+  // Try to link to entity by project name
+  const entityIds: string[] = [];
+  if (project) {
+    const { data: projectEntity } = await supabase
+      .from("entities")
+      .select("id")
+      .ilike("name", project)
+      .limit(1);
+    if (projectEntity?.[0]) entityIds.push(projectEntity[0].id);
+  }
+
+  const { data, error } = await supabase
+    .from("tasks")
+    .insert({
+      title,
+      status: "inbox",
+      priority,
+      category,
+      project,
+      context,
+      entity_ids: entityIds,
+      embedding,
+    })
+    .select()
+    .single();
+
+  if (error) return `❌ Failed: ${error.message}`;
+
+  const parts = [`✅ Task added: ${data.title}`];
+  if (priority > 0) parts.push(`P${priority}`);
+  if (project) parts.push(`#${project}`);
+  if (category === "professional") parts.push("💼");
+  return parts.join(" | ");
+}
+
+async function listTasksForTelegram(filter?: string): Promise<string> {
+  let query = supabase
+    .from("tasks")
+    .select("id, title, status, priority, category, project, due_date")
+    .neq("status", "done")
+    .order("priority", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(15);
+
+  // Optional filter: /tasks next, /tasks professional, /tasks #project
+  if (filter) {
+    const f = filter.toLowerCase().trim();
+    if (["inbox", "next", "waiting", "someday"].includes(f)) {
+      query = query.eq("status", f);
+    } else if (f === "personal" || f === "professional") {
+      query = query.eq("category", f);
+    } else if (f.startsWith("#")) {
+      query = query.ilike("project", `%${f.slice(1)}%`);
+    }
+  }
+
+  const { data, error } = await query;
+  if (error) return `❌ Error: ${error.message}`;
+  if (!data || data.length === 0) return "📋 No active tasks.";
+
+  const statusEmoji: Record<string, string> = {
+    inbox: "📥",
+    next: "⏭️",
+    waiting: "⏳",
+    someday: "💭",
+  };
+
+  const lines = data.map((t) => {
+    const emoji = statusEmoji[t.status] || "📌";
+    const prio = t.priority > 0 ? ` P${t.priority}` : "";
+    const proj = t.project ? ` #${t.project}` : "";
+    const cat = t.category === "professional" ? " 💼" : "";
+    const due = t.due_date ? ` 📅${t.due_date}` : "";
+    return `${emoji}${prio} ${t.title}${proj}${cat}${due}`;
+  });
+
+  return `📋 Tasks (${data.length}):\n${lines.join("\n")}`;
+}
+
+async function completeTaskFromTelegram(search: string): Promise<string> {
+  if (!search) return "❌ Usage: /done task title keywords";
+
+  // Find task by title match
+  const { data } = await supabase
+    .from("tasks")
+    .select("id, title")
+    .neq("status", "done")
+    .ilike("title", `%${search}%`)
+    .limit(1);
+
+  if (!data || data.length === 0) return `❌ No active task matching "${search}"`;
+
+  const task = data[0];
+  const { error } = await supabase
+    .from("tasks")
+    .update({ status: "done", completed_at: new Date().toISOString() })
+    .eq("id", task.id);
+
+  if (error) return `❌ Failed: ${error.message}`;
+  return `✅ Done: ${task.title}`;
+}
+
+async function getStats(): Promise<string> {
+  const [
+    { count: entities },
+    { count: observations },
+    { count: sources },
+    { count: activeTasks },
+  ] = await Promise.all([
+    supabase.from("entities").select("id", { count: "exact", head: true }),
+    supabase.from("observations").select("id", { count: "exact", head: true }),
+    supabase.from("sources").select("id", { count: "exact", head: true }),
+    supabase
+      .from("tasks")
+      .select("id", { count: "exact", head: true })
+      .neq("status", "done"),
+  ]);
+  return (
+    `📊 Brain stats:\n${entities || 0} entities\n${observations || 0} observations\n${sources || 0} sources\n📋 ${activeTasks || 0} active tasks`
+  );
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "*",
+      },
+    });
+  }
+
+  if (req.method !== "POST") {
+    return Response.json({ error: "Method not allowed" }, { status: 405 });
+  }
+
+  // Validate Telegram webhook secret
+  if (TELEGRAM_WEBHOOK_SECRET) {
+    const secretHeader =
+      req.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+    if (secretHeader !== TELEGRAM_WEBHOOK_SECRET) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
+  }
+
+  try {
+    const update = await req.json();
+    const message = update.message;
+
+    if (!message || !message.text) {
+      return Response.json({ status: "skipped", reason: "no text content" });
+    }
+
+    const text = message.text.trim();
+    const chatId = message.chat?.id;
+    if (!chatId) {
+      return Response.json({ status: "skipped", reason: "no chat_id" });
+    }
+    const userId = String(message.from?.id || "");
+    const fromUser =
+      message.from?.username || message.from?.first_name || "unknown";
+    const messageId = message.message_id;
+    const date = message.date
+      ? new Date(message.date * 1000).toISOString()
+      : new Date().toISOString();
+
+    if (!text) {
+      return Response.json({ status: "skipped", reason: "empty message" });
+    }
+
+    // --- User whitelist ---
+    if (ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(userId)) {
+      await sendTelegramReply(chatId, "⛔ This bot is private.");
+      return Response.json({ status: "rejected", reason: "user not allowed" });
+    }
+
+    // --- Commands (not saved to knowledge graph) ---
+    if (text === "/start") {
+      await sendTelegramReply(
+        chatId,
+        "🧠 Open Brain connected! Send me anything to capture.",
+      );
+      return Response.json({ status: "ok", action: "start_greeting" });
+    }
+
+    if (text === "/help") {
+      await sendTelegramReply(
+        chatId,
+        "📖 Commands:\n" +
+          "/start — Connect & greet\n" +
+          "/help — Show this list\n" +
+          "/stats — Brain statistics\n\n" +
+          "📋 Tasks:\n" +
+          "/task Buy groceries — Add task\n" +
+          "/task p3 #work @computer Fix bug — Priority 3, project, context\n" +
+          "/task !work Review PR — Professional task\n" +
+          "/tasks — List active tasks\n" +
+          "/tasks next — Filter by status\n" +
+          "/tasks professional — Filter by category\n" +
+          "/done groceries — Complete matching task\n\n" +
+          "Any other message is saved to your brain.",
+      );
+      return Response.json({ status: "ok", action: "help" });
+    }
+
+    // --- Task commands ---
+    if (text.startsWith("/task ") && !text.startsWith("/tasks")) {
+      const taskText = text.slice(6).trim();
+      const reply = await addTaskFromTelegram(taskText);
+      await sendTelegramReply(chatId, reply);
+      return Response.json({ status: "ok", action: "add_task" });
+    }
+
+    if (text === "/tasks" || text.startsWith("/tasks ")) {
+      const filter = text === "/tasks" ? undefined : text.slice(7).trim();
+      const reply = await listTasksForTelegram(filter);
+      await sendTelegramReply(chatId, reply);
+      return Response.json({ status: "ok", action: "list_tasks" });
+    }
+
+    if (text.startsWith("/done ")) {
+      const search = text.slice(6).trim();
+      const reply = await completeTaskFromTelegram(search);
+      await sendTelegramReply(chatId, reply);
+      return Response.json({ status: "ok", action: "complete_task" });
+    }
+
+    if (text === "/stats") {
+      const stats = await getStats();
+      await sendTelegramReply(chatId, stats);
+      return Response.json({ status: "ok", action: "stats" });
+    }
+
+    // --- Ingest (save to knowledge graph) ---
+    const ingestRes = await fetch(`${SUPABASE_URL}/functions/v1/ingest`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        content: text,
+        source_type: "telegram",
+        origin: `telegram://${fromUser}/${messageId}`,
+        title: text.length > 80 ? text.slice(0, 77) + "..." : text,
+        metadata: {
+          from_user: fromUser,
+          chat_id: chatId,
+          message_id: messageId,
+          date,
+          has_media: !!(message.photo || message.document || message.voice),
+        },
+      }),
+    });
+
+    const result = await ingestRes.json();
+
+    if (!ingestRes.ok) {
+      console.error("Ingest failed:", result);
+      await sendTelegramReply(
+        chatId,
+        `❌ Capture failed: ${result.error || "unknown"}`,
+      );
+      return Response.json(result);
+    }
+
+    if (result.status === "duplicate") {
+      await sendTelegramReply(chatId, "ℹ️ Already captured.");
+      return Response.json(result);
+    }
+
+    // --- Search + LLM reply ---
+    try {
+      const searchResults = await searchBrain(text, 5);
+      const reply = await generateReply(text, searchResults);
+      await sendTelegramReply(chatId, `✅ ${reply}`);
+    } catch (err) {
+      console.error("Search/LLM failed, falling back:", err);
+      const ents = result.entities_count || 0;
+      const obs = result.observations_count || 0;
+      await sendTelegramReply(
+        chatId,
+        `✅ Saved. ${ents} entities, ${obs} observations.`,
+      );
+    }
+
+    return Response.json(result);
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return Response.json({ status: "failed", error: errMsg }, { status: 500 });
+  }
+});

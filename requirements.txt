@@ -1,0 +1,10 @@
+# Core
+supabase>=2.0.0
+openai>=1.0.0
+httpx>=0.25.0
+python-dotenv>=1.0.0
+
+# Connectors
+yt-dlp>=2024.0.0
+youtube-transcript-api>=0.6.0
+PyMuPDF>=1.24.0

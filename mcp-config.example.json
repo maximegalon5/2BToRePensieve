@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "open-brain": {
+      "type": "url",
+      "url": "https://your-project.supabase.co/functions/v1/mcp-server",
+      "headers": {
+        "Authorization": "Bearer YOUR_ACCESS_KEY"
+      }
+    }
+  }
+}
