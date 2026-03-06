@@ -63,11 +63,105 @@ async function embedQuery(text: string): Promise<number[]> {
   return data.data[0].embedding;
 }
 
-async function searchBrain(query: string, limit = 5) {
+// --- LLM Reranking (shared architecture with MCP server) ---
+
+interface SearchRow {
+  result_type: string;
+  result_id: string;
+  name: string | null;
+  content: string | null;
+  entity_type: string | null;
+  observation_type: string | null;
+  similarity: number;
+  metadata: Record<string, unknown> | null;
+  entity_ids: string[] | null;
+  source_id: string | null;
+}
+
+async function rerankWithLLM(
+  query: string,
+  candidates: SearchRow[],
+  topN: number,
+): Promise<SearchRow[]> {
+  if (candidates.length === 0) return [];
+  if (candidates.length <= topN) return candidates;
+
+  const numbered = candidates.map((r, i) => {
+    const label = r.result_type === "entity"
+      ? `[entity: ${r.entity_type}] ${r.name}: ${(r.content || "").slice(0, 200)}`
+      : r.result_type === "task"
+      ? `[task: ${r.observation_type}] ${r.name}: ${(r.content || "").slice(0, 200)}`
+      : `[observation: ${r.observation_type}] ${(r.content || "").slice(0, 300)}`;
+    return `${i + 1}. ${label}`;
+  }).join("\n");
+
+  const prompt = `You are a relevance scoring engine for a personal knowledge graph. Given a search query and numbered results, score each result's relevance to the query from 0 to 10.
+
+10 = directly answers or is the core subject of the query
+7-9 = highly relevant, closely related
+4-6 = somewhat relevant, tangentially related
+1-3 = barely relevant
+0 = not relevant at all
+
+Query: "${query}"
+
+Results:
+${numbered}
+
+Respond with ONLY a JSON array of scores in order, e.g. [8, 3, 10, 5, ...]
+No other text.`;
+
+  try {
+    const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENROUTER_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: CHAT_MODEL,
+        messages: [{ role: "user", content: prompt }],
+        temperature: 0,
+        max_tokens: 500,
+      }),
+    });
+
+    const data = await res.json();
+    const raw = data.choices?.[0]?.message?.content || "";
+
+    const match = raw.match(/\[[\d\s,.]+\]/);
+    if (!match) {
+      console.error("Rerank: could not parse scores, falling back to similarity order");
+      return candidates.slice(0, topN);
+    }
+
+    const scores: number[] = JSON.parse(match[0]);
+    if (scores.length !== candidates.length) {
+      console.error(`Rerank: got ${scores.length} scores for ${candidates.length} candidates, falling back`);
+      return candidates.slice(0, topN);
+    }
+
+    const scored = candidates.map((r, i) => ({
+      ...r,
+      relevance_score: scores[i] || 0,
+    }));
+    scored.sort((a, b) =>
+      b.relevance_score - a.relevance_score || b.similarity - a.similarity
+    );
+
+    return scored.slice(0, topN);
+  } catch (err) {
+    console.error("Rerank failed, falling back to similarity order:", err);
+    return candidates.slice(0, topN);
+  }
+}
+
+async function searchBrain(query: string, limit = 10) {
+  const fetchCount = Math.min(Math.max(limit * 3, 30), 60);
   const embedding = await embedQuery(query);
   const { data, error } = await supabase.rpc("search_knowledge", {
     query_embedding: embedding,
-    match_count: limit,
+    match_count: fetchCount,
     filter_entity_type: null,
     filter_observation_type: null,
   });
@@ -75,22 +169,107 @@ async function searchBrain(query: string, limit = 5) {
     console.error("search_knowledge error:", error.message);
     return [];
   }
-  return data || [];
+
+  let ranked = (data || []) as SearchRow[];
+  if (ranked.length > 0) {
+    ranked = await rerankWithLLM(query, ranked, limit);
+  }
+
+  // Enrich with linked entities and sources
+  const results = [];
+  for (const row of ranked) {
+    const item: Record<string, unknown> = { ...row };
+
+    if (row.result_type === "observation" && row.entity_ids?.length) {
+      const { data: entities } = await supabase
+        .from("entities")
+        .select("id, name, entity_type")
+        .in("id", row.entity_ids);
+      item.linked_entities = entities;
+    }
+
+    if (row.source_id) {
+      const { data: source } = await supabase
+        .from("sources")
+        .select("id, source_type, origin, title")
+        .eq("id", row.source_id)
+        .single();
+      item.source = source;
+    }
+
+    results.push(item);
+  }
+
+  return results;
 }
 
-async function generateReply(
-  userMsg: string,
-  context: { name?: string; content?: string; result_type?: string; similarity?: number }[],
+function formatContext(context: Record<string, unknown>[]): string {
+  if (context.length === 0) return "No relevant context found.";
+  return context
+    .map((r) => {
+      const type = r.result_type as string;
+      const name = r.name as string | null;
+      const content = r.content as string | null;
+      const linked = r.linked_entities as { name: string; entity_type: string }[] | undefined;
+      const source = r.source as { title: string; origin: string } | undefined;
+
+      let line = type === "entity"
+        ? `[Entity] ${name}: ${content || "no description"}`
+        : `[Observation] ${content || ""}`;
+
+      if (linked?.length) {
+        line += ` (linked: ${linked.map(e => e.name).join(", ")})`;
+      }
+      if (source?.title) {
+        line += ` [source: ${source.title}]`;
+      }
+      return line;
+    })
+    .join("\n");
+}
+
+async function generateSearchReply(
+  query: string,
+  context: Record<string, unknown>[],
 ): Promise<string> {
-  const contextBlock = context.length > 0
-    ? context
-        .map((r) =>
-          r.result_type === "entity"
-            ? `[Entity] ${r.name}: ${r.content || "no description"}`
-            : `[Observation] ${r.content}`
-        )
-        .join("\n")
-    : "No relevant context found.";
+  const contextBlock = formatContext(context);
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENROUTER_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      max_tokens: 600,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are Open Brain, a personal knowledge assistant. The user is asking a question. " +
+            "Answer using ONLY the knowledge graph context below. Be clear and thorough but concise. " +
+            "If nothing relevant is found, say so honestly. Include source references when available.\n\n" +
+            "Knowledge graph context:\n" +
+            contextBlock,
+        },
+        { role: "user", content: query },
+      ],
+    }),
+  });
+
+  if (!res.ok) throw new Error(`LLM failed: ${res.status}`);
+  const data = await res.json();
+  const reply = (data.choices?.[0]?.message?.content || "").trim();
+  if (!reply) throw new Error("LLM returned empty response");
+  return reply;
+}
+
+async function generateSaveReply(
+  userMsg: string,
+  context: Record<string, unknown>[],
+): Promise<string> {
+  const contextBlock = formatContext(context);
 
   const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -120,7 +299,6 @@ async function generateReply(
   const data = await res.json();
   const reply = (data.choices?.[0]?.message?.content || "").trim();
   if (!reply) throw new Error("LLM returned empty response");
-  // Hard truncate as safety net
   return reply.length > 250 ? reply.slice(0, 247) + "..." : reply;
 }
 
@@ -506,8 +684,8 @@ Deno.serve(async (req) => {
       case "search_knowledge": {
         const query = params.query || text;
         try {
-          const searchResults = await searchBrain(query, 5);
-          const reply = await generateReply(query, searchResults);
+          const searchResults = await searchBrain(query, 10);
+          const reply = await generateSearchReply(query, searchResults);
           await sendTelegramReply(chatId, reply);
         } catch (err) {
           console.error("Search/LLM failed:", err);
@@ -560,7 +738,7 @@ Deno.serve(async (req) => {
 
         try {
           const searchResults = await searchBrain(text, 5);
-          const reply = await generateReply(text, searchResults);
+          const reply = await generateSaveReply(text, searchResults);
           await sendTelegramReply(chatId, `Saved. ${reply}`);
         } catch (err) {
           console.error("Search/LLM failed, falling back:", err);
