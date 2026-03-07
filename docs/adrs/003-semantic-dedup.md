@@ -2,13 +2,13 @@
 
 **Status:** Accepted
 **Date:** 2026-03-06
-**Decision makers:** [Author], Claude (AI pair programmer)
+**Decision makers:** User, Claude (AI pair programmer)
 
 ## Context
 
 After normalizing entity types (ADR-002), the knowledge graph still had two efficiency problems:
 
-1. **Relation duplication** — 770 entity pairs had multiple relations (1,796 total), many semantically identical. For example, [Entity-X]→SATS had 9 relations: "creates", "evaluates", "implements", "manages", "offers", "provides", "related_to", "uses", "works_on" — all saying roughly the same thing.
+1. **Relation duplication** — 770 entity pairs had multiple relations (1,796 total), many semantically identical. For example, ExampleOrg→SATS had 9 relations: "creates", "evaluates", "implements", "manages", "offers", "provides", "related_to", "uses", "works_on" — all saying roughly the same thing.
 
 2. **Orphaned observations** — 6,836 observations (27.3%) had no entity links, making them unreachable via graph traversal. These contained real knowledge but were orphaned during ingestion when entity resolution failed.
 
@@ -84,9 +84,9 @@ Remaining 4,038 orphans either had no entity match above 0.5, no stored embeddin
 
 | Query | Before | After |
 |-------|--------|-------|
-| What does [Entity-X] do? | timeout | 10 results |
+| What does ExampleOrg do? | timeout | 10 results |
 | tell me about SATS | 10 results | 10 results |
-| what supplements does [Entity-X] offer? | timeout | 10 results |
+| what supplements does ExampleOrg offer? | timeout | 10 results |
 | cortisol and stress | timeout | 10 results |
 | Python programming tools | timeout | 10 results |
 

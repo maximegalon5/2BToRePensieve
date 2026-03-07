@@ -6,7 +6,7 @@
 
 ## Context
 
-The Telegram bot for Open Brain was built as a conversational agent that saves messages to the knowledge graph and replies with contextual information. However, it treated every non-command message as a thought to save. When a user asked natural language questions like "show me my tasks" or "what do I know about Python?", the bot would:
+The Telegram bot (@your_bot) for Open Brain was built as a conversational agent that saves messages to the knowledge graph and replies with contextual information. However, it treated every non-command message as a thought to save. When a user asked natural language questions like "show me my tasks" or "what do I know about Python?", the bot would:
 
 1. Ingest the question as a new thought into the knowledge graph
 2. Run a semantic vector search (unrelated to the actual intent)

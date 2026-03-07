@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-03-06
-**Decision makers:** [Author], Claude (AI pair programmer)
+**Decision makers:** User, Claude (AI pair programmer)
 
 ## Context
 
@@ -72,17 +72,17 @@ After distribution: concept (6,306), tool (1,447), project (760), organization (
 
 | Query | Before | After |
 |-------|--------|-------|
-| [Entity-X] | 10 results | timeout* |
+| ExampleOrg | 10 results | timeout* |
 | SATS | timeout | 10 results, 9 entities |
-| [Person A] | 10 results | 10 results |
+| User | 10 results | 10 results |
 | tell me about SATS | timeout | 10 results, 9 entities |
 | Python programming | timeout | 10 results, 9 entities |
 | React framework | 10 results | 10 results |
-| [Person B] | 10 results | 10 results |
+| PersonB | 10 results | 10 results |
 
-*[Entity-X] has 500+ relations making its neighborhood scan heavy — a separate optimization target.
+*ExampleOrg has 500+ relations making its neighborhood scan heavy — a separate optimization target.
 
-**Net search improvement:** 4 queries that previously timed out now return results. 1 query that previously worked now times out ([Entity-X] — dense node).
+**Net search improvement:** 4 queries that previously timed out now return results. 1 query that previously worked now times out (ExampleOrg — dense node).
 
 ## Migrations
 
@@ -91,6 +91,6 @@ After distribution: concept (6,306), tool (1,447), project (760), organization (
 
 ## Open Items
 
-- [Entity-X] search timeout — dense entity with 500+ relations. Consider: statement timeout tuning, pre-computed entity summaries, or HNSW index parameter tuning.
+- ExampleOrg search timeout — dense entity with 500+ relations. Consider: statement timeout tuning, pre-computed entity summaries, or HNSW index parameter tuning.
 - `content` type has only 16 entities — the extraction prompt may need stronger examples to classify books/articles correctly (many likely landed in `concept`).
 - Graph-aware search expansion (1-hop neighborhood after top results) — planned but not yet implemented.

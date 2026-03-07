@@ -2,6 +2,7 @@
 // Conversational agent: saves messages, searches knowledge graph, replies via LLM.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Logger } from "../_shared/logger.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -568,6 +569,8 @@ Deno.serve(async (req) => {
     }
   }
 
+  const log = new Logger("telegram");
+
   try {
     const update = await req.json();
     const message = update.message;
@@ -589,12 +592,19 @@ Deno.serve(async (req) => {
       ? new Date(message.date * 1000).toISOString()
       : new Date().toISOString();
 
+    log.info("request", "Telegram message received", {
+      fromUser,
+      messageId,
+      textLength: text.length,
+    });
+
     if (!text) {
       return Response.json({ status: "skipped", reason: "empty message" });
     }
 
     // --- User whitelist ---
     if (ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(userId)) {
+      log.warn("auth", "Rejected unauthorized user", { userId });
       await sendTelegramReply(chatId, "⛔ This bot is private.");
       return Response.json({ status: "rejected", reason: "user not allowed" });
     }
@@ -657,8 +667,9 @@ Deno.serve(async (req) => {
     }
 
     // --- Intent Detection (natural language routing) ---
+    log.startStep("intent_detection");
     const { intent, params } = await classifyIntent(text);
-    console.log(`Intent: ${intent}`, params);
+    log.endStep("intent_detection", "Intent classified", { intent, params });
 
     switch (intent) {
       case "list_tasks": {
@@ -684,13 +695,18 @@ Deno.serve(async (req) => {
       case "search_knowledge": {
         const query = params.query || text;
         try {
+          log.startStep("search");
           const searchResults = await searchBrain(query, 10);
+          log.endStep("search", "Search completed", { resultCount: searchResults.length });
+          log.startStep("generate_reply");
           const reply = await generateSearchReply(query, searchResults);
+          log.endStep("generate_reply");
           await sendTelegramReply(chatId, reply);
         } catch (err) {
-          console.error("Search/LLM failed:", err);
+          log.error("search", err);
           await sendTelegramReply(chatId, "Sorry, search failed. Try again later.");
         }
+        log.summary({ action: "search_knowledge", intent });
         return Response.json({ status: "ok", action: "search_knowledge", intent });
       }
 
@@ -702,6 +718,7 @@ Deno.serve(async (req) => {
 
       case "save_thought": {
         // Ingest into knowledge graph
+        log.startStep("ingest");
         const ingestRes = await fetch(`${SUPABASE_URL}/functions/v1/ingest`, {
           method: "POST",
           headers: {
@@ -726,27 +743,40 @@ Deno.serve(async (req) => {
         const result = await ingestRes.json();
 
         if (!ingestRes.ok) {
-          console.error("Ingest failed:", result);
+          log.failStep("ingest", result.error || "unknown", { status: ingestRes.status });
           await sendTelegramReply(chatId, `Capture failed: ${result.error || "unknown"}`);
+          log.summary({ action: "save_thought", status: "ingest_failed" });
           return Response.json(result);
         }
+        log.endStep("ingest", "Ingested", {
+          sourceId: result.source_id,
+          entities: result.entities_count,
+          observations: result.observations_count,
+          status: result.status,
+        });
 
         if (result.status === "duplicate") {
           await sendTelegramReply(chatId, "Already captured.");
+          log.summary({ action: "save_thought", status: "duplicate" });
           return Response.json(result);
         }
 
         try {
+          log.startStep("save_reply");
           const searchResults = await searchBrain(text, 5);
           const reply = await generateSaveReply(text, searchResults);
+          log.endStep("save_reply");
           await sendTelegramReply(chatId, `Saved. ${reply}`);
         } catch (err) {
-          console.error("Search/LLM failed, falling back:", err);
+          log.warn("save_reply", "Search/LLM failed, using fallback", {
+            error: err instanceof Error ? err.message : String(err),
+          });
           const ents = result.entities_count || 0;
           const obs = result.observations_count || 0;
           await sendTelegramReply(chatId, `Saved. ${ents} entities, ${obs} observations.`);
         }
 
+        log.summary({ action: "save_thought", status: "success" });
         return Response.json(result);
       }
 
@@ -765,6 +795,8 @@ Deno.serve(async (req) => {
     }
   } catch (err: unknown) {
     const errMsg = err instanceof Error ? err.message : String(err);
+    log.error("unhandled", err);
+    log.summary({ status: "failed", error: errMsg });
     return Response.json({ status: "failed", error: errMsg }, { status: 500 });
   }
 });

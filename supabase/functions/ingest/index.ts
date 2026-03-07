@@ -9,6 +9,7 @@
 // - Dedicated entity-only similarity search (skips observations/tasks)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { Logger } from "../_shared/logger.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -30,7 +31,7 @@ async function hashContent(text: string): Promise<string> {
   return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-async function embedBatch(texts: string[]): Promise<number[][]> {
+async function embedBatch(texts: string[], log?: Logger): Promise<number[][]> {
   if (texts.length === 0) return [];
   const res = await fetch("https://openrouter.ai/api/v1/embeddings", {
     method: "POST",
@@ -40,7 +41,18 @@ async function embedBatch(texts: string[]): Promise<number[][]> {
     },
     body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
   });
+  if (!res.ok) {
+    const body = await res.text();
+    const err = new Error(`Embedding API ${res.status}: ${body.slice(0, 200)}`);
+    log?.error("embed_batch", err, { count: texts.length });
+    throw err;
+  }
   const data = await res.json();
+  if (!data?.data?.length) {
+    const err = new Error(`Embedding response malformed: ${JSON.stringify(data).slice(0, 200)}`);
+    log?.error("embed_batch", err, { count: texts.length });
+    throw err;
+  }
   return data.data.map((d: { embedding: number[] }) => d.embedding);
 }
 
@@ -52,18 +64,25 @@ async function extractKnowledge(
   const systemPrompt = `You are a knowledge extraction engine. Given source content, extract structured knowledge as JSON.
 
 Extract:
-1. Entities — people, concepts, projects, tools, decisions, events, places, organizations
+1. Entities — classified into EXACTLY one of these 6 types:
+   - person: any human — real people, fictional characters, clients, team members
+   - organization: companies, brands, teams, institutions, communities
+   - project: products, repos, applications, initiatives, services
+   - concept: ideas, theories, patterns, methodologies, decisions, events, places, substances, medical/scientific terms — anything abstract or categorical
+   - tool: software, libraries, frameworks, APIs, platforms, programming languages, hardware
+   - content: books, articles, videos, papers, courses, media
 2. Relations — directed connections between entities
 3. Observations — specific claims, facts, decisions, preferences, action items, insights
 
 Rules:
-- Entity names should be canonical (e.g., "Python" not "python language")
+- Entity type MUST be one of: person, organization, project, concept, tool, content. No other types.
+- Entity names should be canonical (e.g., "Python" not "python language", "React" not "React.js")
 - Each observation should be a single, self-contained statement
 - Be thorough but precise — extract what is actually stated, not inferred
 - If the source is conversational, extract the key knowledge, not every utterance
 
 Respond with valid JSON only. No markdown fences. Schema:
-{"entities": [{"name": "string", "type": "string", "description": "string"}], "relations": [{"source": "string", "target": "string", "type": "string", "description": "string"}], "observations": [{"content": "string", "type": "string", "entities": ["string"]}]}`;
+{"entities": [{"name": "string", "type": "person|organization|project|concept|tool|content", "description": "string"}], "relations": [{"source": "string", "target": "string", "type": "string", "description": "string"}], "observations": [{"content": "string", "type": "string", "entities": ["string"]}]}`;
 
   const userMsg = `Source type: ${sourceType}\nTitle: ${title || "(untitled)"}\n\nContent:\n${content.slice(0, 12000)}`;
 
@@ -184,14 +203,30 @@ Deno.serve(async (req) => {
     });
   }
 
+  // Auth: require service role key
+  const authHeader = req.headers.get("Authorization") || "";
+  const token = authHeader.replace("Bearer ", "");
+  if (token !== SUPABASE_KEY) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const log = new Logger("ingest");
+
   try {
     const { content, source_type, origin, title, metadata } = await req.json();
+    log.info("request", "Ingest request received", {
+      source_type: source_type || "unknown",
+      origin: origin || "",
+      contentLength: content?.length || 0,
+    });
 
     if (!content) {
+      log.warn("validation", "Missing content");
       return Response.json({ error: "content is required" }, { status: 400 });
     }
 
     // 1. Dedup check (DB only)
+    log.startStep("dedup_check");
     const contentHash = await hashContent(content);
     const { data: existing } = await supabase
       .from("sources")
@@ -199,13 +234,17 @@ Deno.serve(async (req) => {
       .eq("content_hash", contentHash);
 
     if (existing && existing.length > 0) {
+      log.endStep("dedup_check", "Duplicate found", { existingId: existing[0].id });
+      log.summary({ status: "duplicate" });
       return Response.json({
         status: "duplicate",
         message: "Content already ingested",
       });
     }
+    log.endStep("dedup_check", "No duplicate");
 
     // 2. Store source (DB only)
+    log.startStep("source_insert");
     const { data: source, error: sourceErr } = await supabase
       .from("sources")
       .insert({
@@ -220,10 +259,14 @@ Deno.serve(async (req) => {
       .select()
       .single();
 
-    if (sourceErr)
+    if (sourceErr) {
+      log.failStep("source_insert", sourceErr);
       throw new Error(`Source insert failed: ${sourceErr.message}`);
+    }
+    log.endStep("source_insert", "Source stored", { sourceId: source.id });
 
     // 3. Extract knowledge (1 LLM call)
+    log.startStep("extraction");
     const extraction = await extractKnowledge(
       content,
       source_type || "unknown",
@@ -233,58 +276,93 @@ Deno.serve(async (req) => {
     const entities = extraction.entities || [];
     const relations = extraction.relations || [];
     const observations = extraction.observations || [];
+    log.endStep("extraction", "Knowledge extracted", {
+      entities: entities.length,
+      relations: relations.length,
+      observations: observations.length,
+    });
 
-    // 4. Batch embed all entity texts (1 API call instead of N)
-    const entityTexts = entities.map(
-      (e: { name: string; description?: string }) =>
-        e.description ? `${e.name}: ${e.description}` : e.name,
-    );
-    const entityEmbeddings = await embedBatch(entityTexts);
+    // 4. Resolve entities: exact name match → fuzzy embedding match → create new
+    log.startStep("entity_resolution");
+    const entityNameToId: Record<string, string> = {};
 
-    // 5. Search for entity candidates (DB calls only — dedicated entity RPC)
-    const entityCandidates: Array<EntityCandidate | null> = [];
+    // 4a. Batch exact name lookups first (cheapest, most reliable)
+    const exactMatches: Array<EntityCandidate | null> = [];
+    for (const entity of entities) {
+      const { data: byName } = await supabase
+        .from("entities")
+        .select("id, name, entity_type, description, aliases")
+        .ilike("name", entity.name)
+        .limit(1);
+      exactMatches.push(byName?.[0] ? { ...byName[0], similarity: 1.0 } as EntityCandidate : null);
+    }
+
+    // 4b. For entities without exact match, batch embed and fuzzy search
+    const needsEmbedding: number[] = [];
     for (let i = 0; i < entities.length; i++) {
+      if (!exactMatches[i]) needsEmbedding.push(i);
+    }
+
+    const embeddingTexts = needsEmbedding.map((i) => {
+      const e = entities[i];
+      return e.description ? `${e.name}: ${e.description}` : e.name;
+    });
+    const embeddings = await embedBatch(embeddingTexts, log);
+
+    // Store all embeddings (needed for new entity creation)
+    const entityEmbeddings: Array<number[] | null> = new Array(entities.length).fill(null);
+    needsEmbedding.forEach((origIdx, embIdx) => {
+      entityEmbeddings[origIdx] = embeddings[embIdx];
+    });
+
+    // 4c. Fuzzy search for unmatched entities
+    const fuzzyCandidates: Array<EntityCandidate | null> = new Array(entities.length).fill(null);
+    for (let j = 0; j < needsEmbedding.length; j++) {
+      const origIdx = needsEmbedding[j];
       const { data: similar } = await supabase.rpc(
         "search_similar_entities",
         {
-          query_embedding: entityEmbeddings[i],
+          query_embedding: embeddings[j],
           match_count: 1,
-          similarity_threshold: 0.85,
+          similarity_threshold: 0.8,
         },
       );
-      entityCandidates.push(similar?.[0] || null);
+      fuzzyCandidates[origIdx] = similar?.[0] || null;
     }
 
-    // 6. Batch LLM merge confirmation (0-1 LLM call total)
+    // 4d. Batch LLM merge confirmation for fuzzy matches only
     const mergePairs: Array<{
       newName: string;
       newType: string;
       newDesc: string;
       existing: EntityCandidate;
+      origIdx: number;
     }> = [];
 
-    for (let i = 0; i < entities.length; i++) {
-      if (entityCandidates[i]) {
+    for (const origIdx of needsEmbedding) {
+      if (fuzzyCandidates[origIdx]) {
         mergePairs.push({
-          newName: entities[i].name,
-          newType: entities[i].type || "concept",
-          newDesc: entities[i].description || "",
-          existing: entityCandidates[i]!,
+          newName: entities[origIdx].name,
+          newType: entities[origIdx].type || "concept",
+          newDesc: entities[origIdx].description || "",
+          existing: fuzzyCandidates[origIdx]!,
+          origIdx,
         });
       }
     }
 
     const mergeDecisions = await batchConfirmMerges(mergePairs);
 
-    // 7. Apply entity decisions: merge or create (DB calls only)
-    const entityNameToId: Record<string, string> = {};
-
+    // 4e. Apply decisions: exact match → fuzzy merge → create new
     for (let i = 0; i < entities.length; i++) {
       const entity = entities[i];
-      const candidate = entityCandidates[i];
 
-      if (candidate && mergeDecisions[entity.name]) {
-        // Merge: add alias
+      if (exactMatches[i]) {
+        // Exact name match — use existing entity directly
+        entityNameToId[entity.name] = exactMatches[i]!.id;
+      } else if (fuzzyCandidates[i] && mergeDecisions[entity.name]) {
+        // Fuzzy match confirmed by LLM — merge
+        const candidate = fuzzyCandidates[i]!;
         const aliases = candidate.aliases || [];
         if (!aliases.includes(entity.name)) {
           aliases.push(entity.name);
@@ -295,14 +373,21 @@ Deno.serve(async (req) => {
         }
         entityNameToId[entity.name] = candidate.id;
       } else {
-        // Create new entity
+        // No match — create new entity (need embedding)
+        let embedding = entityEmbeddings[i];
+        if (!embedding) {
+          // Entity had an exact-match attempt but no embedding yet
+          const text = entity.description ? `${entity.name}: ${entity.description}` : entity.name;
+          [embedding] = await embedBatch([text]);
+        }
+
         const { data: newEntity } = await supabase
           .from("entities")
           .insert({
             name: entity.name,
             entity_type: entity.type || "concept",
             description: entity.description || "",
-            embedding: entityEmbeddings[i],
+            embedding,
           })
           .select()
           .single();
@@ -313,38 +398,59 @@ Deno.serve(async (req) => {
       }
     }
 
-    // 8. Store relations — dedup: skip if same edge exists (DB calls only)
+    const exactCount = exactMatches.filter(Boolean).length;
+    const mergedCount = Object.values(mergeDecisions).filter(Boolean).length;
+    const createdCount = entities.length - exactCount - mergedCount;
+    log.endStep("entity_resolution", "Entities resolved", {
+      total: entities.length,
+      exact: exactCount,
+      merged: mergedCount,
+      created: createdCount,
+    });
+
+    // 8. Store relations — dedup: skip if ANY relation exists between this pair
+    log.startStep("relations");
+    let relsSkipped = 0;
     for (const rel of relations) {
       const sourceEid = entityNameToId[rel.source];
       const targetEid = entityNameToId[rel.target];
       if (sourceEid && targetEid) {
+        // Check if any relation already exists between this entity pair
         const { data: existingRel } = await supabase
           .from("relations")
           .select("id")
           .eq("source_entity", sourceEid)
           .eq("target_entity", targetEid)
-          .eq("relation_type", rel.type || "related_to")
           .limit(1);
 
-        if (!existingRel || existingRel.length === 0) {
-          await supabase.from("relations").insert({
-            source_entity: sourceEid,
-            target_entity: targetEid,
-            relation_type: rel.type || "related_to",
-            description: rel.description || "",
-            source_id: source.id,
-          });
+        if (existingRel && existingRel.length > 0) {
+          relsSkipped++;
+          continue;
         }
+
+        await supabase.from("relations").insert({
+          source_entity: sourceEid,
+          target_entity: targetEid,
+          relation_type: rel.type || "related_to",
+          description: rel.description || "",
+          source_id: source.id,
+        });
       }
     }
+    log.endStep("relations", "Relations stored", {
+      total: relations.length,
+      skipped: relsSkipped,
+      inserted: relations.length - relsSkipped,
+    });
 
     // 9. Batch embed all observations (1 API call instead of N)
+    log.startStep("observations");
     let obsSkipped = 0;
     if (observations.length > 0) {
       const obsTexts = observations.map(
         (o: { content: string }) => o.content,
       );
-      const obsEmbeddings = await embedBatch(obsTexts);
+      const obsEmbeddings = await embedBatch(obsTexts, log);
 
       for (let i = 0; i < observations.length; i++) {
         const obs = observations[i];
@@ -397,22 +503,34 @@ Deno.serve(async (req) => {
       }
     }
 
+    log.endStep("observations", "Observations stored", {
+      total: observations.length,
+      skipped: obsSkipped,
+      inserted: observations.length - obsSkipped,
+    });
+
     // 10. Mark source as extracted
     await supabase
       .from("sources")
       .update({ status: "extracted" })
       .eq("id", source.id);
 
-    return Response.json({
+    const result = {
       status: "success",
       source_id: source.id,
       entities_count: entities.length,
       relations_count: relations.length,
+      relations_skipped: relsSkipped,
       observations_count: observations.length,
       observations_skipped: obsSkipped,
-    });
+    };
+
+    log.summary(result);
+    return Response.json(result);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    log.error("unhandled", err);
+    log.summary({ status: "failed", error: message });
     return Response.json({ status: "failed", error: message }, { status: 500 });
   }
 });

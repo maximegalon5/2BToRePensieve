@@ -1,13 +1,17 @@
 // Open Brain Email Capture — Supabase Edge Function
 // Receives Resend inbound email webhooks, verifies Svix signature,
 // fetches body via Resend API, extracts PDF attachments, then forwards to ingest.
+// Sends Telegram notification after PDF processing.
 
 import { extractText } from "https://esm.sh/unpdf@0.12";
+import { Logger } from "../_shared/logger.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY") || "";
 const RESEND_WEBHOOK_SECRET = Deno.env.get("RESEND_WEBHOOK_SECRET") || "";
+const TELEGRAM_BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN") || "";
+const TELEGRAM_NOTIFY_CHAT_ID = (Deno.env.get("TELEGRAM_ALLOWED_USERS") || "").split(",")[0]?.trim() || "";
 
 // Max PDF file size to process (10 MB)
 const MAX_PDF_BYTES = 10 * 1024 * 1024;
@@ -17,6 +21,28 @@ if (!RESEND_API_KEY) {
 }
 if (!RESEND_WEBHOOK_SECRET) {
   console.warn("RESEND_WEBHOOK_SECRET is not set — webhook signature verification disabled");
+}
+
+// --- Telegram notification ---
+
+async function notifyTelegram(text: string) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_NOTIFY_CHAT_ID) return;
+  try {
+    await fetch(
+      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: TELEGRAM_NOTIFY_CHAT_ID,
+          text,
+          parse_mode: "Markdown",
+        }),
+      },
+    );
+  } catch (err) {
+    console.error("Telegram notification failed:", err);
+  }
 }
 
 // --- Text chunking (mirrors open_brain/chunking.py) ---
@@ -198,6 +224,8 @@ Deno.serve(async (req) => {
     }
   }
 
+  const log = new Logger("email");
+
   try {
     // Resend sends JSON webhook with email.received event
     const webhook = JSON.parse(rawBody);
@@ -213,6 +241,7 @@ Deno.serve(async (req) => {
     }
 
     const emailId = data.email_id as string;
+    log.info("request", "Email webhook received", { emailId });
 
     // Fetch full email content from Resend Receiving API
     if (!RESEND_API_KEY) {
@@ -312,7 +341,16 @@ Deno.serve(async (req) => {
       body += `\n\n--- Attachments ---\n${attSummary}`;
     }
 
+    log.info("email_parsed", "Email fetched and parsed", {
+      from,
+      subject,
+      bodyLength: body.length,
+      attachmentCount: attachments.length,
+      pdfCount: attachments.filter(a => a.content_type?.startsWith("application/pdf")).length,
+    });
+
     // 1. Ingest the email body
+    log.startStep("ingest_body");
     const emailResult = await ingestContent(
       body,
       "email",
@@ -332,6 +370,8 @@ Deno.serve(async (req) => {
       },
     );
 
+    log.endStep("ingest_body", "Email body ingested", { status: emailResult.status });
+
     // 2. Extract and ingest PDF attachments as separate sources
     const pdfResults: Record<string, unknown>[] = [];
     for (const att of attachments) {
@@ -342,15 +382,20 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      console.log("Extracting PDF:", att.filename);
+      log.startStep(`pdf_${att.filename}`);
       const pdfData = await extractPdfText(att.download_url);
-      if (!pdfData) continue;
+      if (!pdfData) {
+        log.failStep(`pdf_${att.filename}`, "PDF extraction returned no text");
+        continue;
+      }
 
-      console.log(`  PDF text: ${pdfData.text.length} chars, ${pdfData.totalPages} pages`);
+      log.info(`pdf_${att.filename}`, "PDF text extracted", {
+        chars: pdfData.text.length,
+        pages: pdfData.totalPages,
+      });
 
       // Chunk the PDF text for full extraction
       const chunks = chunkText(pdfData.text);
-      console.log(`  Chunked into ${chunks.length} piece(s)`);
 
       for (let i = 0; i < chunks.length; i++) {
         const chunkLabel = chunks.length > 1 ? ` (chunk ${i + 1}/${chunks.length})` : "";
@@ -382,10 +427,46 @@ Deno.serve(async (req) => {
           chunk: i + 1,
           total_chunks: chunks.length,
           status: result.status,
+          entities: result.entities_count || 0,
+          observations: result.observations_count || 0,
         });
-        console.log(`  chunk ${i + 1}/${chunks.length}: ${result.status}`);
       }
+
+      log.endStep(`pdf_${att.filename}`, "PDF ingested", {
+        chunks: chunks.length,
+        pages: pdfData.totalPages,
+        chars: pdfData.text.length,
+      });
     }
+
+    // 3. Send Telegram notification for processed PDFs
+    if (pdfResults.length > 0) {
+      const totalEntities = pdfResults.reduce((sum, r) => sum + ((r.entities as number) || 0), 0);
+      const totalObs = pdfResults.reduce((sum, r) => sum + ((r.observations as number) || 0), 0);
+      const pdfSummaries = [...new Set(pdfResults.map(r => r.filename))].map(filename => {
+        const chunks = pdfResults.filter(r => r.filename === filename);
+        const totalChunks = (chunks[0]?.total_chunks as number) || 1;
+        return `  *${filename}* (${totalChunks} chunk${totalChunks > 1 ? "s" : ""})`;
+      });
+
+      const msg = [
+        `*PDF processed from email*`,
+        `From: ${from}`,
+        `Subject: ${subject || "(no subject)"}`,
+        ``,
+        ...pdfSummaries,
+        ``,
+        `Extracted: ${totalEntities} entities, ${totalObs} observations`,
+      ].join("\n");
+
+      await notifyTelegram(msg);
+      log.info("notification", "Telegram notification sent");
+    }
+
+    log.summary({
+      emailStatus: emailResult.status,
+      pdfCount: pdfResults.length,
+    });
 
     return Response.json({
       ...emailResult,
@@ -393,6 +474,8 @@ Deno.serve(async (req) => {
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
+    log.error("unhandled", err);
+    log.summary({ status: "failed", error: message });
     return Response.json({ status: "failed", error: message }, { status: 500 });
   }
 });
