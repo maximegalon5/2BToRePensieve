@@ -94,7 +94,14 @@ Deno.serve(async (req) => {
           }),
         });
 
-        const result = await ingestRes.json();
+        let result: Record<string, unknown>;
+        if (!ingestRes.ok) {
+          const errBody = await ingestRes.text().catch(() => "");
+          console.error("Slack ingest failed:", ingestRes.status, errBody.slice(0, 300));
+          result = { status: "failed", error: `Ingest returned ${ingestRes.status}` };
+        } else {
+          result = await ingestRes.json();
+        }
         log.endStep("ingest", "Ingest complete", { status: result.status });
 
         // Reply in Slack with confirmation

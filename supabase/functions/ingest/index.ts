@@ -103,12 +103,19 @@ Respond with valid JSON only. No markdown fences. Schema:
     }),
   });
 
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    console.error("extractKnowledge: LLM API error", res.status, errBody.slice(0, 300));
+    return { entities: [], relations: [], observations: [] };
+  }
+
   const data = await res.json();
   const raw = data.choices?.[0]?.message?.content || "{}";
 
   try {
     return JSON.parse(raw);
   } catch {
+    console.error("extractKnowledge: failed to parse LLM response:", raw.slice(0, 300));
     return { entities: [], relations: [], observations: [] };
   }
 }
@@ -162,6 +169,14 @@ async function batchConfirmMerges(
         max_tokens: 200,
       }),
     });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      console.error("batchConfirmMerges: LLM API error", res.status, errBody.slice(0, 300));
+      const result: Record<string, boolean> = {};
+      pairs.forEach((p) => { result[p.newName] = false; });
+      return result;
+    }
 
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content || "[]";

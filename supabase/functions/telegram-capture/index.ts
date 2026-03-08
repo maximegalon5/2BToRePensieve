@@ -127,6 +127,12 @@ No other text.`;
       }),
     });
 
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      console.error("Rerank: LLM API error", res.status, errBody.slice(0, 300));
+      return candidates.slice(0, topN);
+    }
+
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content || "";
 
@@ -413,7 +419,7 @@ async function addTaskFromTelegram(text: string): Promise<string> {
     title = title.replace(/!(?:prof(?:essional)?|work)/i, "").trim();
   }
 
-  if (!title) return "❌ Need a task title. Usage: /task Buy groceries";
+  if (!title) return "Need a task title. Usage: /task Buy groceries";
 
   // Embed for search
   const embeddingText = `${title}${project ? " [" + project + "]" : ""}`;
@@ -450,12 +456,11 @@ async function addTaskFromTelegram(text: string): Promise<string> {
     .select()
     .single();
 
-  if (error) return `❌ Failed: ${error.message}`;
+  if (error) return `Failed: ${error.message}`;
 
-  const parts = [`✅ Task added: ${data.title}`];
+  const parts = [`Task added: ${data.title}`];
   if (priority > 0) parts.push(`P${priority}`);
   if (project) parts.push(`#${project}`);
-  if (category === "professional") parts.push("💼");
   return parts.join(" | ");
 }
 
@@ -481,30 +486,30 @@ async function listTasksForTelegram(filter?: string): Promise<string> {
   }
 
   const { data, error } = await query;
-  if (error) return `❌ Error: ${error.message}`;
-  if (!data || data.length === 0) return "📋 No active tasks.";
+  if (error) return `Error: ${error.message}`;
+  if (!data || data.length === 0) return "No active tasks.";
 
   const statusEmoji: Record<string, string> = {
-    inbox: "📥",
-    next: "⏭️",
-    waiting: "⏳",
-    someday: "💭",
+    inbox: "inbox",
+    next: "next",
+    waiting: "waiting",
+    someday: "someday",
   };
 
   const lines = data.map((t) => {
-    const emoji = statusEmoji[t.status] || "📌";
+    const status = statusEmoji[t.status] || t.status;
     const prio = t.priority > 0 ? ` P${t.priority}` : "";
     const proj = t.project ? ` #${t.project}` : "";
-    const cat = t.category === "professional" ? " 💼" : "";
-    const due = t.due_date ? ` 📅${t.due_date}` : "";
-    return `${emoji}${prio} ${t.title}${proj}${cat}${due}`;
+    const cat = t.category === "professional" ? " [work]" : "";
+    const due = t.due_date ? ` due:${t.due_date}` : "";
+    return `[${status}]${prio} ${t.title}${proj}${cat}${due}`;
   });
 
-  return `📋 Tasks (${data.length}):\n${lines.join("\n")}`;
+  return `Tasks (${data.length}):\n${lines.join("\n")}`;
 }
 
 async function completeTaskFromTelegram(search: string): Promise<string> {
-  if (!search) return "❌ Usage: /done task title keywords";
+  if (!search) return "Usage: /done task title keywords";
 
   // Find task by title match
   const { data } = await supabase
@@ -514,7 +519,7 @@ async function completeTaskFromTelegram(search: string): Promise<string> {
     .ilike("title", `%${search}%`)
     .limit(1);
 
-  if (!data || data.length === 0) return `❌ No active task matching "${search}"`;
+  if (!data || data.length === 0) return `No active task matching "${search}"`;
 
   const task = data[0];
   const { error } = await supabase
@@ -522,8 +527,8 @@ async function completeTaskFromTelegram(search: string): Promise<string> {
     .update({ status: "done", completed_at: new Date().toISOString() })
     .eq("id", task.id);
 
-  if (error) return `❌ Failed: ${error.message}`;
-  return `✅ Done: ${task.title}`;
+  if (error) return `Failed: ${error.message}`;
+  return `Done: ${task.title}`;
 }
 
 async function getStats(): Promise<string> {
@@ -542,7 +547,7 @@ async function getStats(): Promise<string> {
       .neq("status", "done"),
   ]);
   return (
-    `📊 Brain stats:\n${entities || 0} entities\n${observations || 0} observations\n${sources || 0} sources\n📋 ${activeTasks || 0} active tasks`
+    `Brain stats:\n${entities || 0} entities\n${observations || 0} observations\n${sources || 0} sources\n${activeTasks || 0} active tasks`
   );
 }
 
@@ -605,7 +610,7 @@ Deno.serve(async (req) => {
     // --- User whitelist ---
     if (ALLOWED_USERS.length > 0 && !ALLOWED_USERS.includes(userId)) {
       log.warn("auth", "Rejected unauthorized user", { userId });
-      await sendTelegramReply(chatId, "⛔ This bot is private.");
+      await sendTelegramReply(chatId, "This bot is private.");
       return Response.json({ status: "rejected", reason: "user not allowed" });
     }
 
@@ -613,7 +618,7 @@ Deno.serve(async (req) => {
     if (text === "/start") {
       await sendTelegramReply(
         chatId,
-        "🧠 Open Brain connected! Send me anything to capture.",
+        "Open Brain connected! Send me anything to capture.",
       );
       return Response.json({ status: "ok", action: "start_greeting" });
     }
@@ -621,18 +626,18 @@ Deno.serve(async (req) => {
     if (text === "/help") {
       await sendTelegramReply(
         chatId,
-        "📖 Commands:\n" +
-          "/start — Connect & greet\n" +
-          "/help — Show this list\n" +
-          "/stats — Brain statistics\n\n" +
-          "📋 Tasks:\n" +
-          "/task Buy groceries — Add task\n" +
-          "/task p3 #work @computer Fix bug — Priority 3, project, context\n" +
-          "/task !work Review PR — Professional task\n" +
-          "/tasks — List active tasks\n" +
-          "/tasks next — Filter by status\n" +
-          "/tasks professional — Filter by category\n" +
-          "/done groceries — Complete matching task\n\n" +
+        "Commands:\n" +
+          "/start - Connect & greet\n" +
+          "/help - Show this list\n" +
+          "/stats - Brain statistics\n\n" +
+          "Tasks:\n" +
+          "/task Buy groceries - Add task\n" +
+          "/task p3 #work @computer Fix bug - Priority 3, project, context\n" +
+          "/task !work Review PR - Professional task\n" +
+          "/tasks - List active tasks\n" +
+          "/tasks next - Filter by status\n" +
+          "/tasks professional - Filter by category\n" +
+          "/done groceries - Complete matching task\n\n" +
           "Any other message is saved to your brain.",
       );
       return Response.json({ status: "ok", action: "help" });
@@ -740,7 +745,16 @@ Deno.serve(async (req) => {
           }),
         });
 
-        const result = await ingestRes.json();
+        let result: Record<string, unknown>;
+        try {
+          result = await ingestRes.json();
+        } catch {
+          const text = await ingestRes.text().catch(() => "");
+          log.failStep("ingest", `Non-JSON response (${ingestRes.status}): ${text.slice(0, 200)}`);
+          await sendTelegramReply(chatId, "Capture failed: unexpected server response");
+          log.summary({ action: "save_thought", status: "ingest_failed" });
+          return Response.json({ status: "failed", error: "Non-JSON ingest response" });
+        }
 
         if (!ingestRes.ok) {
           log.failStep("ingest", result.error || "unknown", { status: ingestRes.status });

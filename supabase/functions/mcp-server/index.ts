@@ -30,7 +30,14 @@ async function embedQuery(text: string): Promise<number[]> {
     },
     body: JSON.stringify({ model: EMBED_MODEL, input: [text] }),
   });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`Embedding API ${res.status}: ${errBody.slice(0, 200)}`);
+  }
   const data = await res.json();
+  if (!data?.data?.[0]?.embedding) {
+    throw new Error(`Embedding response malformed: ${JSON.stringify(data).slice(0, 200)}`);
+  }
   return data.data[0].embedding;
 }
 
@@ -96,6 +103,12 @@ No other text.`;
         max_tokens: 500,
       }),
     });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      console.error("Rerank: LLM API error", res.status, errBody.slice(0, 300));
+      return candidates.slice(0, topN);
+    }
 
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content || "";
@@ -252,6 +265,12 @@ async function addThought(args: Record<string, unknown>) {
       metadata,
     }),
   });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    console.error("addThought: ingest failed", res.status, errBody.slice(0, 300));
+    return { status: "failed", error: `Ingest returned ${res.status}` };
+  }
 
   return await res.json();
 }

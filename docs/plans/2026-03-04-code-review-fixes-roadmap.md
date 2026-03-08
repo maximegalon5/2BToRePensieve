@@ -17,16 +17,15 @@ All 16 live tests passed. The following issues were identified in the code revie
 - **Problem:** No auth at all. Any POST is accepted and forwarded to ingest.
 - **Fix:** Verify `X-Slack-Signature` using HMAC-SHA256 with `SLACK_SIGNING_SECRET`. Add secret to `.env.example` and docs.
 
-### 3. Ingest function: add auth check
+### ~~3. Ingest function: add auth check~~ ✅ DONE
 - **File:** `supabase/functions/ingest/index.ts`
-- **Problem:** Public endpoint with `--no-verify-jwt`. Anyone who knows the URL can write to the knowledge graph.
-- **Fix:** Check `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>` before processing.
+- **Status:** Auth check added (lines 206-210) — verifies `Authorization: Bearer <SUPABASE_SERVICE_ROLE_KEY>` before processing.
 
 ## Important
 
-### 4. Embedding API error handling
-- **Files:** `ingest/index.ts` (embedBatch), `mcp-server/index.ts` (embedQuery)
-- **Fix:** Check `res.ok` and `data.data` existence before accessing `.map()` / `[0].embedding`.
+### ~~4. API error handling sweep~~ ✅ DONE
+- **Files:** All edge functions (ingest, mcp-server, telegram-capture, email-capture, slack-capture)
+- **Status:** Added `res.ok` checks before `.json()` on all external API calls (embeddings, LLM, ingest). Errors now log status + response body instead of crashing with cryptic messages.
 
 ### 5. Docs: wrong CLI flags
 - **File:** `docs/setup-channels.md`
@@ -44,9 +43,9 @@ All 16 live tests passed. The following issues were identified in the code revie
 - **File:** `.github/workflows/daily-sync.yml`
 - **Fix:** Quote `"${{ secrets.NOTION_DATABASE_ID }}"`.
 
-### 9. get_entity null handling
+### ~~9. get_entity null handling~~ ✅ DONE
 - **File:** `supabase/functions/mcp-server/index.ts`
-- **Fix:** Check `error` from `supabase.rpc()` and handle null context.
+- **Status:** Fixed — `get_entity` and `explore_neighborhood` now handle null returns (commit 204e36a).
 
 ### 10. Missing seed.sql
 - **File:** `supabase/config.toml`
