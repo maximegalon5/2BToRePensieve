@@ -3,8 +3,9 @@
 // fetches body via Resend API, extracts PDF attachments, then forwards to ingest.
 // Sends Telegram notification after PDF processing.
 
-import { extractText } from "https://esm.sh/unpdf@0.12";
 import { Logger } from "../_shared/logger.ts";
+
+const OPENAI_API_KEY = Deno.env.get("OPENAI_API_KEY") || "";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -150,27 +151,125 @@ interface AttachmentInfo {
   expires_at?: string;
 }
 
-async function extractPdfText(downloadUrl: string): Promise<{ text: string; totalPages: number } | null> {
+// --- PDF text extraction (tiered: unpdf → OpenAI fallback) ---
+
+async function extractPdfWithUnpdf(data: Uint8Array): Promise<{ text: string; totalPages: number } | null> {
+  try {
+    const { getDocumentProxy, extractText } = await import("npm:unpdf@1.4.0");
+    console.log("PDF [unpdf]: loaded unpdf@1.4.0, creating document proxy...");
+    const pdf = await getDocumentProxy(data);
+    console.log("PDF [unpdf]: proxy created, extracting text...");
+    const result = await extractText(pdf, { mergePages: true });
+    const text = (result.text || "").trim();
+    console.log("PDF [unpdf]: extracted", text.length, "chars,", result.totalPages, "pages");
+    if (text.length < 50) {
+      console.warn("PDF [unpdf]: text too short (", text.length, "chars), likely extraction failure");
+      return null;
+    }
+    return { text, totalPages: result.totalPages || 0 };
+  } catch (err) {
+    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error("PDF [unpdf]: failed —", msg);
+    return null;
+  }
+}
+
+async function extractPdfWithOpenAI(data: Uint8Array, filename: string): Promise<{ text: string; totalPages: number } | null> {
+  if (!OPENAI_API_KEY) {
+    console.warn("PDF [openai]: OPENAI_API_KEY not set, skipping fallback");
+    return null;
+  }
+  try {
+    console.log("PDF [openai]: sending", data.byteLength, "bytes to GPT-4o-mini...");
+    const base64 = btoa(String.fromCharCode(...data));
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{
+          role: "user",
+          content: [
+            {
+              type: "file",
+              file: { data: base64, filename },
+            },
+            {
+              type: "text",
+              text: "Extract all text content from this PDF document. Return only the extracted text, preserving the original structure and formatting. Do not add any commentary.",
+            },
+          ],
+        }],
+        max_tokens: 16000,
+      }),
+    });
+
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      console.error("PDF [openai]: API error", res.status, errBody.slice(0, 300));
+      return null;
+    }
+
+    const result = await res.json();
+    const text = result.choices?.[0]?.message?.content?.trim() || "";
+    const usage = result.usage;
+    console.log("PDF [openai]: extracted", text.length, "chars (tokens:", usage?.total_tokens || "?", ")");
+
+    if (!text || text.length < 50) {
+      console.warn("PDF [openai]: insufficient text extracted (", text.length, "chars)");
+      return null;
+    }
+
+    return { text, totalPages: 0 }; // OpenAI doesn't report page count
+  } catch (err) {
+    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error("PDF [openai]: failed —", msg);
+    return null;
+  }
+}
+
+async function extractPdfText(downloadUrl: string, filename: string): Promise<{ text: string; totalPages: number; method: string } | null> {
+  // Step 1: Download the PDF
+  let pdfBuffer: ArrayBuffer;
   try {
     const pdfRes = await fetch(downloadUrl);
     if (!pdfRes.ok) {
-      console.error("PDF download failed:", pdfRes.status);
+      const errBody = await pdfRes.text().catch(() => "");
+      console.error("PDF download failed:", pdfRes.status, errBody.slice(0, 200));
       return null;
     }
-
-    const pdfBuffer = await pdfRes.arrayBuffer();
-    if (pdfBuffer.byteLength > MAX_PDF_BYTES) {
-      console.warn("PDF too large, skipping:", pdfBuffer.byteLength, "bytes");
-      return null;
-    }
-
-    const result = await extractText(new Uint8Array(pdfBuffer));
-    const text = result.text?.trim() || "";
-    return text ? { text, totalPages: result.totalPages || 0 } : null;
+    pdfBuffer = await pdfRes.arrayBuffer();
+    console.log("PDF: downloaded", pdfBuffer.byteLength, "bytes");
   } catch (err) {
-    console.error("PDF text extraction error:", err);
+    console.error("PDF download error:", err instanceof Error ? err.message : err);
     return null;
   }
+
+  if (pdfBuffer.byteLength > MAX_PDF_BYTES) {
+    console.warn("PDF too large, skipping:", pdfBuffer.byteLength, "bytes");
+    return null;
+  }
+
+  const data = new Uint8Array(pdfBuffer);
+
+  // Step 2: Try unpdf (fast, free, local)
+  const unpdfResult = await extractPdfWithUnpdf(data);
+  if (unpdfResult) {
+    return { ...unpdfResult, method: "unpdf" };
+  }
+
+  // Step 3: Fallback to OpenAI (reliable, costs tokens)
+  console.log("PDF: unpdf failed, falling back to OpenAI...");
+  const openaiResult = await extractPdfWithOpenAI(data, filename);
+  if (openaiResult) {
+    return { ...openaiResult, method: "openai" };
+  }
+
+  console.error("PDF: all extraction methods failed for", filename);
+  return null;
 }
 
 async function ingestContent(
@@ -194,7 +293,20 @@ async function ingestContent(
       metadata,
     }),
   });
-  return await res.json();
+
+  const text = await res.text();
+  let result: Record<string, unknown>;
+  try {
+    result = JSON.parse(text);
+  } catch {
+    console.error("Ingest returned non-JSON:", res.status, text.slice(0, 500));
+    return { status: "failed", error: `Ingest non-JSON response (${res.status}): ${text.slice(0, 200)}` };
+  }
+
+  if (res.status !== 200 || result.status === "failed") {
+    console.error("Ingest failed:", res.status, JSON.stringify(result).slice(0, 500));
+  }
+  return result;
 }
 
 // --- Main handler ---
@@ -374,6 +486,11 @@ Deno.serve(async (req) => {
 
     // 2. Extract and ingest PDF attachments as separate sources
     const pdfResults: Record<string, unknown>[] = [];
+    log.info("pdf_scan", "Scanning attachments for PDFs", {
+      totalAttachments: attachments.length,
+      withUrls: attachments.filter(a => a.download_url).length,
+      pdfs: attachments.filter(a => a.content_type?.startsWith("application/pdf")).length,
+    });
     for (const att of attachments) {
       if (!att.download_url) continue;
       if (!att.content_type?.startsWith("application/pdf")) continue;
@@ -383,13 +500,14 @@ Deno.serve(async (req) => {
       }
 
       log.startStep(`pdf_${att.filename}`);
-      const pdfData = await extractPdfText(att.download_url);
+      const pdfData = await extractPdfText(att.download_url, att.filename);
       if (!pdfData) {
-        log.failStep(`pdf_${att.filename}`, "PDF extraction returned no text");
+        log.failStep(`pdf_${att.filename}`, "All PDF extraction methods failed");
         continue;
       }
 
       log.info(`pdf_${att.filename}`, "PDF text extracted", {
+        method: pdfData.method,
         chars: pdfData.text.length,
         pages: pdfData.totalPages,
       });
@@ -429,6 +547,7 @@ Deno.serve(async (req) => {
           status: result.status,
           entities: result.entities_count || 0,
           observations: result.observations_count || 0,
+          error: result.status === "failed" ? result.error : undefined,
         });
       }
 
@@ -463,14 +582,29 @@ Deno.serve(async (req) => {
       log.info("notification", "Telegram notification sent");
     }
 
+    // Determine overall status: success if either email or PDFs succeeded
+    const pdfSuccessCount = pdfResults.filter(r => r.status === "success").length;
+    const overallStatus = (emailResult.status === "success" || pdfSuccessCount > 0)
+      ? "success" : (emailResult.status as string);
+
     log.summary({
       emailStatus: emailResult.status,
+      emailError: emailResult.status === "failed" ? emailResult.error : undefined,
       pdfCount: pdfResults.length,
+      pdfSuccessCount,
     });
 
     return Response.json({
-      ...emailResult,
+      status: overallStatus,
+      email: emailResult,
       pdf_attachments: pdfResults.length > 0 ? pdfResults : undefined,
+      _debug: {
+        attachments_found: attachments.length,
+        attachments_with_urls: attachments.filter(a => a.download_url).length,
+        pdf_attachments_found: attachments.filter(a => a.content_type?.startsWith("application/pdf") && a.download_url).length,
+        pdf_results_count: pdfResults.length,
+        telegram_configured: !!(TELEGRAM_BOT_TOKEN && TELEGRAM_NOTIFY_CHAT_ID),
+      },
     });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
