@@ -40,3 +40,7 @@ node_modules/
 
 # Logs
 *.log
+
+# Cookies (never commit)
+cookies.txt
+yt_cookies.txt
