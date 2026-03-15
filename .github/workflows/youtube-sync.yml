@@ -1,0 +1,43 @@
+name: YouTube Liked Videos Sync
+
+on:
+  schedule:
+    - cron: "0 6 * * *"  # Daily at 6am UTC
+  workflow_dispatch:       # Allow manual trigger
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Write cookies file
+        run: echo "${{ secrets.YOUTUBE_COOKIES_B64 }}" | base64 -d > yt_cookies.txt
+
+      - name: Sync YouTube Liked Videos
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          OPENROUTER_CHAT_MODEL: openai/gpt-4o-mini
+          OPENROUTER_EMBED_MODEL: openai/text-embedding-3-small
+        run: |
+          python3 -m open_brain.connectors.youtube \
+            --playlist "${{ secrets.YOUTUBE_PLAYLIST_URL }}" \
+            --cookies yt_cookies.txt \
+            --sync \
+            --delay 2
+
+      - name: Clean up cookies
+        if: always()
+        run: rm -f yt_cookies.txt

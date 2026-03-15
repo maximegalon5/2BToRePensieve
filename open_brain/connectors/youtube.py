@@ -77,7 +77,7 @@ def chunk_transcript(text: str, max_chars: int = 10000) -> list[str]:
     return chunk_text(text, max_chars=max_chars)
 
 
-def get_playlist_videos_ytdlp(playlist_url: str) -> list[dict]:
+def get_playlist_videos_ytdlp(playlist_url: str, cookies_file: str = "") -> list[dict]:
     """Get all videos in a playlist using yt-dlp Python API (most reliable)."""
     try:
         import yt_dlp
@@ -89,6 +89,8 @@ def get_playlist_videos_ytdlp(playlist_url: str) -> list[dict]:
         "quiet": True,
         "no_warnings": True,
     }
+    if cookies_file:
+        ydl_opts["cookiefile"] = cookies_file
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(playlist_url, download=False)
         entries = info.get("entries", [])
@@ -245,6 +247,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="Show what would be ingested")
     ap.add_argument("--delay", type=float, default=2.0, help="Seconds between API calls")
     ap.add_argument("--sync", action="store_true", help="Enable sync tracking (skip already ingested)")
+    ap.add_argument("--cookies", default="", help="Path to cookies.txt file for private playlists")
     args = ap.parse_args()
 
     if not args.url and not args.playlist:
@@ -295,7 +298,7 @@ def main() -> int:
     sync_id = f"youtube_playlist_{playlist_id}"
 
     print(f"Fetching playlist videos: {playlist_url}")
-    videos = get_playlist_videos_ytdlp(playlist_url)
+    videos = get_playlist_videos_ytdlp(playlist_url, cookies_file=args.cookies)
     print(f"Found {len(videos)} videos in playlist")
 
     # Check which are already ingested
