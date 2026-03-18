@@ -108,3 +108,78 @@ def ingest_content(
     except Exception as e:
         db.mark_source_failed(supabase_client, source_id, str(e))
         return {"status": "failed", "source_id": source_id, "error": str(e)}
+
+
+def retry_extraction(
+    supabase_client: Client,
+    embed_client: OpenAI,
+    embed_model: str,
+    chat_client: OpenAI,
+    chat_model: str,
+    source: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-run extraction on an existing source. Skips source insert and content embedding."""
+    source_id = source["id"]
+    content = source["raw_content"]
+    source_type = source["source_type"]
+    title = source.get("title", "")
+    metadata = source.get("metadata")
+
+    try:
+        extraction = extract_knowledge(
+            chat_client, chat_model, content, source_type, title
+        )
+
+        entity_name_to_id = resolve_entities_batch(
+            supabase_client,
+            embed_client, embed_model,
+            chat_client, chat_model,
+            extraction.entities,
+        )
+
+        for relation in extraction.relations:
+            source_eid = entity_name_to_id.get(relation.source)
+            target_eid = entity_name_to_id.get(relation.target)
+            if source_eid and target_eid:
+                db.insert_relation(
+                    supabase_client,
+                    source_entity_id=source_eid,
+                    target_entity_id=target_eid,
+                    relation_type=relation.relation_type,
+                    description=relation.description,
+                    source_id=source_id,
+                )
+
+        if extraction.observations:
+            obs_texts = [obs.content for obs in extraction.observations]
+            obs_embeddings = embed_texts(embed_client, embed_model, obs_texts)
+
+            for obs, obs_embedding in zip(extraction.observations, obs_embeddings):
+                obs_entity_ids = [
+                    entity_name_to_id[name]
+                    for name in obs.entities
+                    if name in entity_name_to_id
+                ]
+                db.insert_observation(
+                    supabase_client,
+                    content=obs.content,
+                    embedding=obs_embedding,
+                    observation_type=obs.observation_type,
+                    entity_ids=obs_entity_ids,
+                    source_id=source_id,
+                    metadata=metadata,
+                )
+
+        db.mark_source_extracted(supabase_client, source_id)
+
+        return {
+            "status": "success",
+            "source_id": source_id,
+            "entities_count": len(extraction.entities),
+            "relations_count": len(extraction.relations),
+            "observations_count": len(extraction.observations),
+        }
+
+    except Exception as e:
+        db.mark_source_failed(supabase_client, source_id, str(e))
+        return {"status": "failed", "source_id": source_id, "error": str(e)}

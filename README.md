@@ -425,6 +425,14 @@ What's planned for the next major version:
 
 ## Release Notes
 
+### v0.3.1 (2026-03-18)
+
+**Entity type expansion + extraction resilience**
+- Added 3 new entity types: `technology`, `event`, `decision` (total: 9). Common LLM-generated types outside this set are auto-mapped to the nearest valid type (e.g., `platform` -> `tool`, `place` -> `concept`).
+- Fixed `upsert_entity` fallback lookup: the unique constraint is on `lower(name)` only, but the fallback was matching on name+type, causing crashes when the same entity was extracted with different types across chunks.
+- Added `retry_failed.py` — standalone script to re-run extraction on sources with `status='failed'` without re-inserting or re-embedding. Sends Telegram notification on completion.
+- Migration 008: expands the entity type check constraint and reclassifies existing entities.
+
 ### v0.3.0 (2026-03-18)
 
 **Notion backfill sync fix**

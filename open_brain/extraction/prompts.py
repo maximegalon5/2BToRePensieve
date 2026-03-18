@@ -4,7 +4,7 @@ EXTRACTION_SYSTEM_PROMPT = """\
 You are a knowledge extraction engine. Given source content, extract structured knowledge as JSON.
 
 Extract:
-1. **Entities** — people, concepts, projects, tools, decisions, events, places, organizations mentioned
+1. **Entities** — classified as one of these types ONLY: person, organization, project, concept, tool, content, technology, event, decision
 2. **Relations** — directed connections between entities (who uses what, what depends on what, etc.)
 3. **Observations** — specific claims, facts, decisions, preferences, action items, questions, or insights
 

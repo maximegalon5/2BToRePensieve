@@ -54,11 +54,11 @@ def upsert_entity(
     aliases: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Insert a new entity, or return existing if name+type already exists.
+    """Insert a new entity, or return existing if name already exists.
 
-    Handles the unique constraint on (lower(name), entity_type) gracefully
-    by falling back to a lookup when the insert fails (e.g., same entity
-    extracted from multiple chunks of the same content).
+    Handles the unique constraint on lower(name) gracefully by falling
+    back to a name-only lookup when the insert fails. This covers cases
+    where the same entity is extracted with different types across chunks.
     """
     row = {
         "name": name,
@@ -72,12 +72,11 @@ def upsert_entity(
         result = client.table("entities").insert(row).execute()
         return result.data[0]
     except Exception:
-        # Unique constraint violation — entity already exists, look it up
+        # Unique constraint on lower(name) — entity exists, look up by name only
         existing = (
             client.table("entities")
             .select("*")
             .ilike("name", name)
-            .eq("entity_type", entity_type)
             .limit(1)
             .execute()
         )
@@ -231,3 +230,16 @@ def mark_source_failed(client: Client, source_id: str, error: str) -> None:
         "status": "failed",
         "metadata": {"error": error},
     }).eq("id", source_id).execute()
+
+
+def get_failed_sources(
+    client: Client, source_type: str | None = None, limit: int = 0
+) -> list[dict[str, Any]]:
+    """Get sources with status='failed' for retry."""
+    query = client.table("sources").select("*").eq("status", "failed")
+    if source_type:
+        query = query.eq("source_type", source_type)
+    query = query.order("created_at", desc=False)
+    if limit:
+        query = query.limit(limit)
+    return query.execute().data or []

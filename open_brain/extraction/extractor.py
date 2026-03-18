@@ -11,6 +11,28 @@ from open_brain.extraction.prompts import (
     EXTRACTION_USER_TEMPLATE,
 )
 
+VALID_ENTITY_TYPES = {
+    "person", "organization", "project", "concept",
+    "tool", "content", "technology", "event", "decision",
+}
+
+# Map common LLM-generated types to valid ones
+_TYPE_ALIASES = {
+    "place": "concept", "location": "concept", "framework": "tool",
+    "methodology": "concept", "platform": "tool", "service": "tool",
+    "company": "organization", "product": "tool", "language": "technology",
+    "library": "technology", "technique": "concept", "metric": "concept",
+    "role": "concept", "category": "concept", "topic": "concept",
+}
+
+
+def normalize_entity_type(raw_type: str) -> str:
+    """Clamp entity type to a valid DB value."""
+    t = raw_type.lower().strip()
+    if t in VALID_ENTITY_TYPES:
+        return t
+    return _TYPE_ALIASES.get(t, "concept")
+
 
 @dataclass
 class ExtractedEntity:
@@ -84,7 +106,7 @@ def _parse_extraction(raw_json: str) -> ExtractionResult:
         if isinstance(e, dict) and "name" in e:
             entities.append(ExtractedEntity(
                 name=e["name"],
-                entity_type=e.get("type", "concept"),
+                entity_type=normalize_entity_type(e.get("type", "concept")),
                 description=e.get("description", ""),
             ))
 
