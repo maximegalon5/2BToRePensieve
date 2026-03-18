@@ -266,6 +266,24 @@ def get_sync_state(db_client, sync_id: str) -> str | None:
     return None
 
 
+def get_already_ingested_notion(db_client) -> set[str]:
+    """Get set of Notion page IDs already ingested."""
+    result = db_client.table("sources") \
+        .select("origin") \
+        .eq("source_type", "notion_page") \
+        .like("origin", "notion://%") \
+        .execute()
+
+    ingested = set()
+    for row in result.data or []:
+        origin = row.get("origin", "")
+        # Extract page ID from notion://PAGE_ID or notion://PAGE_ID#chunk-N
+        page_id = origin.replace("notion://", "").split("#")[0]
+        if page_id:
+            ingested.add(page_id)
+    return ingested
+
+
 def update_sync_state(db_client, sync_id: str, metadata: dict | None = None):
     """Update sync state cursor."""
     now = datetime.now(timezone.utc).isoformat()
@@ -307,18 +325,45 @@ def main() -> int:
         embed_client, embed_model = get_cloud_embedder(cfg)
         chat_client = OpenAI(base_url=cfg.openrouter.base_url, api_key=cfg.openrouter.api_key)
 
-    # Incremental sync: get last sync timestamp
+    # Sync strategy: fetch ALL pages from Notion, then filter locally to find
+    # (a) pages modified since last sync (re-ingest) and (b) pages never ingested (backfill).
+    # This ensures the backlog is worked through even if pages haven't been edited recently.
+    already_ingested: set[str] = set()
     last_edited_after = None
     if args.sync and not args.dry_run:
         last_edited_after = get_sync_state(db_client, sync_id)
+        already_ingested = get_already_ingested_notion(db_client)
         if last_edited_after:
-            print(f"Incremental sync: pages modified after {last_edited_after}")
+            print(f"Sync cursor: {last_edited_after}")
+            print(f"Already ingested: {len(already_ingested)} pages")
         else:
             print("First sync: fetching all pages")
 
     print(f"Querying Notion database {args.database_id}...")
-    pages = query_database_pages(args.database_id, token, last_edited_after)
-    print(f"Found {len(pages)} pages{' (modified since last sync)' if last_edited_after else ''}")
+    all_pages = query_database_pages(args.database_id, token)  # Always fetch all
+    print(f"Total pages in database: {len(all_pages)}")
+
+    if args.sync and not args.dry_run and already_ingested:
+        # Split into modified (re-ingest) and new (backfill)
+        modified_pages = []
+        new_pages = []
+        for page in all_pages:
+            page_id = page["id"]
+            last_edited = page.get("last_edited_time", "")
+            if page_id in already_ingested:
+                # Re-ingest if modified since last sync
+                if last_edited_after and last_edited > last_edited_after:
+                    modified_pages.append(page)
+            else:
+                new_pages.append(page)
+
+        print(f"Modified since last sync: {len(modified_pages)}")
+        print(f"Never ingested (backfill): {len(new_pages)}")
+        # Prioritize modified pages, then backfill
+        pages = modified_pages + new_pages
+    else:
+        pages = all_pages
+
     print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE INGEST'}")
     print()
 

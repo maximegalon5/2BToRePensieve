@@ -10,11 +10,6 @@ on:
         description: 'Max Notion pages to process (0 = use default)'
         default: '0'
         type: string
-      youtube_limit:
-        description: 'Max YouTube videos to process (0 = use default)'
-        default: '0'
-        type: string
-
 jobs:
   sync-notion:
     name: Sync Notion Database
@@ -44,40 +39,37 @@ jobs:
           # Default: 50 pages per run during backlog, unlimited once caught up
           LIMIT="${{ github.event.inputs.notion_limit || '50' }}"
           python -m open_brain.connectors.notion_database \
-            --database-id ${{ secrets.NOTION_DATABASE_ID }} \
+            --database-id "${{ secrets.NOTION_DATABASE_ID }}" \
             --token "$NOTION_API_TOKEN" \
             --sync \
             --limit "$LIMIT" \
             --delay 1.5
 
-  sync-youtube:
-    name: Sync YouTube Playlist
+  # YouTube sync moved to local Windows Task Scheduler (scripts/sync-youtube.ps1)
+  # Cloud IPs are blocked by YouTube; local machine uses home IP instead.
+
+  notify:
+    name: Telegram Notification
     runs-on: ubuntu-latest
+    needs: [sync-notion]
+    if: always()
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.13'
-          cache: 'pip'
-
-      - name: Install dependencies
-        run: |
-          pip install supabase openai yt-dlp youtube-transcript-api python-dotenv
-
-      - name: Sync YouTube playlist
+      - name: Send Telegram notification
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
-          OPENROUTER_BASE_URL: https://openrouter.ai/api/v1
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          OPENROUTER_CHAT_MODEL: openai/gpt-4o-mini
-          OPENROUTER_EMBED_MODEL: openai/text-embedding-3-small
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_NOTIFY_CHAT_ID }}
         run: |
-          # Default: 10 videos per run during backlog (each video = multiple chunks)
-          LIMIT="${{ github.event.inputs.youtube_limit || '10' }}"
-          python -m open_brain.connectors.youtube \
-            --playlist "${{ secrets.YOUTUBE_PLAYLIST_URL }}" \
-            --sync \
-            --limit "$LIMIT" \
-            --delay 2.0
+          NOTION_STATUS="${{ needs.sync-notion.result }}"
+
+          if [ "$NOTION_STATUS" = "success" ]; then
+            MSG="Daily Sync completed
+          Notion: $NOTION_STATUS"
+          else
+            MSG="Daily Sync has failures
+          Notion: $NOTION_STATUS
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"${MSG}\"}"

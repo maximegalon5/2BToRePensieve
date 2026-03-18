@@ -20,9 +20,18 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
+import os
 import re
 import sys
 import time
+
+# Force UTF-8 stdout on Windows (video titles may contain emoji/unicode)
+if sys.platform == "win32" and not isinstance(sys.stdout, io.TextIOWrapper):
+    pass  # already wrapped
+elif sys.stdout.encoding != "utf-8":
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -62,9 +71,15 @@ def extract_playlist_id(url: str) -> str:
     raise ValueError(f"Could not extract playlist ID from: {url}")
 
 
-def fetch_transcript(video_id: str) -> str:
-    """Fetch and concatenate transcript text."""
-    api = YouTubeTranscriptApi()
+def fetch_transcript(video_id: str, cookies: str | None = None) -> str:
+    """Fetch and concatenate transcript text.
+
+    Args:
+        video_id: YouTube video ID.
+        cookies: Path to a Netscape-format cookies.txt file for authentication.
+                 Helps avoid IP bans on shared infrastructure (e.g. GitHub Actions).
+    """
+    api = YouTubeTranscriptApi(cookies=cookies) if cookies else YouTubeTranscriptApi()
     transcript = api.fetch(video_id)
     return " ".join(entry.text for entry in transcript)
 
@@ -143,7 +158,7 @@ def update_sync_state(db_client, sync_id: str, metadata: dict | None = None):
 def ingest_single_video(
     db_client, embed_client, embed_model, chat_client, chat_model,
     video_id: str, title: str = "", dry_run: bool = False,
-    max_chunk_chars: int = 10000,
+    max_chunk_chars: int = 10000, cookies: str | None = None,
 ) -> dict:
     """Ingest a single YouTube video transcript, chunking long transcripts.
 
@@ -154,7 +169,7 @@ def ingest_single_video(
     url = f"https://www.youtube.com/watch?v={video_id}"
 
     try:
-        transcript = fetch_transcript(video_id)
+        transcript = fetch_transcript(video_id, cookies=cookies)
     except Exception as e:
         return {"status": "failed", "error": f"Transcript fetch failed: {e}"}
 
@@ -245,6 +260,7 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true", help="Show what would be ingested")
     ap.add_argument("--delay", type=float, default=2.0, help="Seconds between API calls")
     ap.add_argument("--sync", action="store_true", help="Enable sync tracking (skip already ingested)")
+    ap.add_argument("--cookies", default=None, help="Path to Netscape-format cookies.txt for YouTube auth (avoids IP bans)")
     args = ap.parse_args()
 
     if not args.url and not args.playlist:
@@ -271,6 +287,7 @@ def main() -> int:
             video_id=video_id,
             title=args.title,
             dry_run=args.dry_run,
+            cookies=args.cookies,
         )
 
         status = result.get("status", "unknown")
@@ -332,7 +349,7 @@ def main() -> int:
 
         result = ingest_single_video(
             db_client, embed_client, embed_model, chat_client, cfg.openrouter.chat_model,
-            video_id=vid, title=title,
+            video_id=vid, title=title, cookies=args.cookies,
         )
 
         status = result.get("status", "unknown")

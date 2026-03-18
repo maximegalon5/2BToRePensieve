@@ -1,6 +1,6 @@
 # 2BToRePensieve
 
-> **Status (2026-03-05):** Active development. The core system works — ingestion, knowledge graph, MCP server, and daily sync are all functional. Documentation fixes are ongoing (see [Known Issues](#known-issues)). If you find a bug or something doesn't match the docs, open an issue.
+> **Status (2026-03-18):** Active development. See [Release Notes](#release-notes) for the latest changes.
 
 **A cloud-hosted personal knowledge graph you can talk to from any AI assistant.**
 
@@ -52,7 +52,7 @@
 - **GTD Task System** — inbox/next/waiting/someday/done with priorities and projects
 - **7 Input Channels** — ChatGPT, Claude, Notion, YouTube, Telegram, Email, local files
 - **5-Layer Dedup** — Content hash, semantic similarity, entity name+type, relation edges, observation hash
-- **Daily Sync** — GitHub Actions cron for Notion and YouTube
+- **Daily Sync** — GitHub Actions for Notion, local Task Scheduler for YouTube (cloud IPs blocked by YouTube)
 - **Batched Pipeline** — 2-3 LLM calls + 2 embedding calls per chunk (not per entity)
 
 ## Quick Start
@@ -216,9 +216,11 @@ cp .env.example .env
 │       ├── telegram-capture/      # Telegram bot webhook
 │       ├── email-capture/         # Resend inbound email webhook
 │       └── slack-capture/         # Slack event webhook
+├── scripts/
+│   └── sync-youtube.ps1           # Local YouTube sync (Task Scheduler)
 └── .github/
     └── workflows/
-        └── daily-sync.yml         # Cron: Notion + YouTube daily sync
+        └── daily-sync.yml         # Cron: Notion daily sync
 ```
 
 ## Database Schema
@@ -269,18 +271,58 @@ With `gpt-4o-mini` + `text-embedding-3-small` via OpenRouter:
 
 **Typical monthly cost: $5-15** for moderate personal use.
 
-## Daily Sync (GitHub Actions)
+## Daily Sync
+
+### Notion (GitHub Actions)
 
 The included workflow runs daily at 6 AM UTC:
 
-- **Notion**: Syncs pages from a database, 50 pages per run, incremental cursor
-- **YouTube**: Syncs videos from a playlist, 10 videos per run, extracts transcripts
+- Syncs pages from a Notion database, 50 pages per run
+- Two-phase sync: re-ingests modified pages, then backfills un-ingested pages
+- Safe limit for the 6-hour GitHub Actions timeout: ~300 pages per run
 
 Set these GitHub Actions secrets:
 - `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
 - `OPENROUTER_API_KEY`
 - `NOTION_API_TOKEN`, `NOTION_DATABASE_ID`
-- `YOUTUBE_PLAYLIST_URL`
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_NOTIFY_CHAT_ID` (optional, for notifications)
+
+### YouTube (Local Task Scheduler)
+
+> **Why not GitHub Actions?** YouTube blocks transcript requests from cloud provider IPs (AWS, GCP, Azure). All GitHub Actions runners use cloud IPs, so every transcript fetch fails with `RequestBlocked`. See [YouTube IP Blocking](#youtube-ip-blocking) for details and alternatives.
+
+YouTube sync runs locally via Windows Task Scheduler using your home IP:
+
+```powershell
+# Register the scheduled task (run once)
+$repoRoot = "C:\path	oBToRePensieve"
+$scriptPath = Join-Path $repoRoot "scripts\sync-youtube.ps1"
+
+$action = New-ScheduledTaskAction `
+    -Execute "powershell.exe" `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`"" `
+    -WorkingDirectory $repoRoot
+
+$trigger = New-ScheduledTaskTrigger -Daily -At "6:00AM"
+
+$settings = New-ScheduledTaskSettingsSet `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries `
+    -WakeToRun `
+    -StartWhenAvailable `
+    -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+
+Register-ScheduledTask `
+    -TaskName "OpenBrain-YouTube-Sync" `
+    -Description "Daily YouTube playlist sync for knowledge graph" `
+    -Action $action `
+    -Trigger $trigger `
+    -Settings $settings
+```
+
+The `-WakeToRun` flag wakes the computer from sleep to run the sync, then it goes back to sleep.
+
+**Before running:** Edit `scripts/sync-youtube.ps1` and set your playlist URL.
 
 ## Inspiration
 
@@ -318,6 +360,26 @@ Ways to extend this that we haven't built yet:
 | **Self-hosted LLM** | Run extraction with Ollama/llama.cpp instead of OpenRouter |
 | **Webhooks out** | Trigger actions when new entities/observations match patterns |
 
+## YouTube IP Blocking
+
+YouTube's transcript API blocks requests from cloud provider IPs. This affects any CI/CD runner (GitHub Actions, GitLab CI, CircleCI, etc.) because they all use cloud infrastructure.
+
+**Symptoms:**
+- `RequestBlocked` or `IpBlocked` exception from `youtube-transcript-api`
+- Error: "YouTube is blocking requests from your IP"
+- All transcript fetches fail, 0 videos ingested
+
+**Solutions (pick one):**
+
+| Approach | Pros | Cons |
+|----------|------|------|
+| **Local Task Scheduler** (recommended) | Simple, free, uses home IP | PC must be on/sleeping (not off) |
+| **Self-hosted GitHub Actions runner** | Same workflow file, logs in GitHub UI | Must keep agent running |
+| **Residential proxy** | Works from any CI/CD | Costs money, adds complexity |
+| **Cookie authentication** | Quick fix from cloud | Risks account ban, cookies expire |
+
+This project uses the **Local Task Scheduler** approach via `scripts/sync-youtube.ps1`.
+
 ## Known Issues
 
 Issues identified during code review (2026-03-04). Fixes in progress.
@@ -338,7 +400,7 @@ Issues identified during code review (2026-03-04). Fixes in progress.
 | 5 | ~~Important~~ | `mcp-server` | ~~`get_entity` silently returns `null` on RPC error instead of an error message.~~ **Fixed.** Root cause: SQL bug in `get_entity_context` RPC (ORDER BY outside jsonb_agg) + swallowed error in TypeScript. |
 | 6 | Important | `config.toml` | References `seed.sql` that doesn't exist — `supabase db reset` will fail locally. |
 | 7 | ~~Important~~ | `requirements.txt` | ~~Missing `ijson` dependency — ChatGPT connector fails on fresh install.~~ **Fixed.** |
-| 8 | Important | `daily-sync.yml` | `NOTION_DATABASE_ID` injected unquoted into shell command. |
+| 8 | ~~Important~~ | `daily-sync.yml` | ~~`NOTION_DATABASE_ID` injected unquoted into shell command.~~ **Fixed.** |
 
 ### Documentation
 
@@ -360,6 +422,29 @@ What's planned for the next major version:
 - **Mobile app** — native iOS/Android for quick capture with photo, voice, and location context
 - **Federated sync** — merge knowledge graphs across devices/instances without a central server
 - **Plugin system** — drop-in connector SDK so anyone can build new input channels
+
+## Release Notes
+
+### v0.3.0 (2026-03-18)
+
+**Notion backfill sync fix**
+- The `--sync` flag previously only queried Notion for pages modified after `last_edited_time`, which meant un-ingested pages in the backlog were never picked up. Now fetches all pages and locally filters into two groups: (a) pages modified since last sync (re-ingest) and (b) pages never ingested (backfill). Prioritizes modified pages, then fills the backlog up to `--limit`.
+
+**YouTube sync moved to local execution**
+- YouTube blocks transcript requests from cloud provider IPs (all GitHub Actions runners). Moved YouTube sync to a local Windows Task Scheduler script (`scripts/sync-youtube.ps1`) that uses your home IP.
+- Added `--cookies` flag to `youtube.py` for optional cookie-based authentication.
+- Fixed `UnicodeEncodeError` crash on Windows when video titles contain emoji/unicode characters.
+
+**Other fixes**
+- N+1 query fix + HNSW search optimization (20x speedup)
+- MCP server concurrency fix (per-request server instances)
+- Defensive error handling on all edge function API calls
+- Tiered PDF extraction (unpdf v1.4 + OpenAI vision fallback)
+- Telegram notification for daily sync results
+
+### v0.2.0 (2026-03-05)
+
+Initial public release with core knowledge graph, 7 input channels, 12 MCP tools, and daily sync via GitHub Actions.
 
 ## License
 
