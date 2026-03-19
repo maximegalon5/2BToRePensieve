@@ -1,6 +1,6 @@
 # 2BToRePensieve
 
-> **Status (2026-03-18):** Active development. See [Release Notes](#release-notes) for the latest changes.
+> **Status (2026-03-19):** Active development. See [Release Notes](#release-notes) for the latest changes.
 
 **A cloud-hosted personal knowledge graph you can talk to from any AI assistant.**
 
@@ -424,6 +424,12 @@ What's planned for the next major version:
 - **Plugin system** — drop-in connector SDK so anyone can build new input channels
 
 ## Release Notes
+
+### v0.3.3 (2026-03-19)
+
+**YouTube backfill improvements**
+- Added `--newest-first` flag to YouTube connector — indexes most recent playlist additions first instead of oldest-first, so new content is available sooner during backfill.
+- Bumped Task Scheduler daily limit from 10 to 15 videos/day.
 
 ### v0.3.2 (2026-03-18)
 

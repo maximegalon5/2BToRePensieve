@@ -261,6 +261,7 @@ def main() -> int:
     ap.add_argument("--delay", type=float, default=2.0, help="Seconds between API calls")
     ap.add_argument("--sync", action="store_true", help="Enable sync tracking (skip already ingested)")
     ap.add_argument("--cookies", default=None, help="Path to Netscape-format cookies.txt for YouTube auth (avoids IP bans)")
+    ap.add_argument("--newest-first", action="store_true", help="Process newest playlist videos first (default: oldest first)")
     args = ap.parse_args()
 
     if not args.url and not args.playlist:
@@ -322,7 +323,9 @@ def main() -> int:
         print(f"Already ingested: {len(already_ingested)} videos")
 
     new_videos = [v for v in videos if v["id"] not in already_ingested]
-    print(f"New to ingest: {len(new_videos)} videos")
+    if args.newest_first:
+        new_videos = list(reversed(new_videos))
+    print(f"New to ingest: {len(new_videos)} videos{' (newest first)' if args.newest_first else ''}")
     print(f"Mode: {'DRY RUN' if args.dry_run else 'LIVE INGEST'}")
     print()
 

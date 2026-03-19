@@ -1,17 +1,11 @@
 # YouTube Daily Sync — runs via Windows Task Scheduler
 # Uses local home IP to avoid YouTube cloud-IP blocking
-#
-# Setup:
-#   1. Edit $PlaylistUrl below with your playlist URL
-#   2. Register with Task Scheduler (see README for commands)
 
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 $LogDir = Join-Path $RepoRoot "logs"
 $LogFile = Join-Path $LogDir ("youtube-sync-{0}.log" -f (Get-Date -Format "yyyy-MM-dd"))
 $Python = Join-Path $RepoRoot ".venv\Scripts\python.exe"
-
-# --- CONFIGURE THIS ---
 $PlaylistUrl = "https://www.youtube.com/playlist?list=YOUR_PLAYLIST_ID"
 
 # Ensure logs dir exists
@@ -19,7 +13,7 @@ if (-not (Test-Path $LogDir)) { New-Item -ItemType Directory -Path $LogDir | Out
 
 # Fallback to system Python if venv doesn't exist
 if (-not (Test-Path $Python)) {
-    $Python = "python"
+    $Python = "C:\Program Files\Python312\python.exe"
 }
 
 $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -29,7 +23,8 @@ try {
     & $Python -m open_brain.connectors.youtube `
         --playlist $PlaylistUrl `
         --sync `
-        --limit 10 `
+        --newest-first `
+        --limit 15 `
         --delay 2.0 `
         2>&1 | Tee-Object -Append -FilePath $LogFile
 
