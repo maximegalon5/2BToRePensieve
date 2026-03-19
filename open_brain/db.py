@@ -8,6 +8,33 @@ from supabase import create_client, Client
 
 from open_brain.config import OpenBrainConfig
 
+# Defense-in-depth: clamp entity types at DB layer too
+_VALID_ENTITY_TYPES = {
+    "person", "organization", "project", "concept",
+    "tool", "content", "technology", "event", "decision",
+}
+_DB_TYPE_ALIASES = {
+    "place": "concept", "location": "concept", "framework": "tool",
+    "methodology": "concept", "platform": "tool", "service": "tool",
+    "company": "organization", "product": "tool", "language": "technology",
+    "library": "technology", "technique": "concept", "metric": "concept",
+    "role": "concept", "category": "concept", "topic": "concept",
+    "publication": "content", "journal": "content", "article": "content",
+    "organ": "concept", "anatomy": "concept", "anatomical structure": "concept",
+    "disease": "concept", "condition": "concept", "compound": "concept",
+    "bacteria": "concept", "cell type": "concept", "cell_line": "concept",
+    "algorithm": "concept", "benchmark": "concept", "database": "technology",
+    "data": "concept", "demographic": "concept", "country": "concept",
+    "dish": "concept", "agreement": "concept", "breathwork": "concept",
+}
+
+
+def _safe_entity_type(raw: str) -> str:
+    t = raw.lower().strip()
+    if t in _VALID_ENTITY_TYPES:
+        return t
+    return _DB_TYPE_ALIASES.get(t, "concept")
+
 
 def get_client(cfg: OpenBrainConfig) -> Client:
     return create_client(cfg.supabase.url, cfg.supabase.service_role_key)
@@ -62,7 +89,7 @@ def upsert_entity(
     """
     row = {
         "name": name,
-        "entity_type": entity_type,
+        "entity_type": _safe_entity_type(entity_type),
         "description": description,
         "embedding": embedding,
         "aliases": aliases or [],
@@ -73,15 +100,19 @@ def upsert_entity(
         return result.data[0]
     except Exception:
         # Unique constraint on lower(name) — entity exists, look up by name only
-        existing = (
-            client.table("entities")
-            .select("*")
-            .ilike("name", name)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            return existing.data[0]
+        # Try ilike first (case-insensitive), then eq (exact match) as fallback
+        for query_method in ["ilike", "eq"]:
+            try:
+                q = client.table("entities").select("*")
+                if query_method == "ilike":
+                    q = q.ilike("name", name)
+                else:
+                    q = q.eq("name", name)
+                existing = q.limit(1).execute()
+                if existing.data:
+                    return existing.data[0]
+            except Exception:
+                continue
         # Re-raise if not a constraint issue
         raise
 

@@ -425,6 +425,15 @@ What's planned for the next major version:
 
 ## Release Notes
 
+### v0.3.2 (2026-03-18)
+
+**Structured output schema enforcement + DB-layer type safety**
+- Replaced `json_object` response format with `json_schema` structured output. Entity and observation types are now `enum`-constrained at the token generation level — the LLM physically cannot produce an invalid type.
+- Added defense-in-depth `_safe_entity_type()` in `db.py` with an extended alias map (30+ biomedical/science types like `organ`, `bacteria`, `journal` → valid types). Acts as a second safety net if schema enforcement is unavailable on the model.
+- Improved `upsert_entity` duplicate key fallback with `ilike` + `eq` cascade for more robust entity resolution.
+- Fixed Windows `cp1252` encoding crash in `retry_failed.py` when source titles contain Greek characters or other non-ASCII.
+- Result: all 450+ previously failed source extractions resolved (0 failures remaining).
+
 ### v0.3.1 (2026-03-18)
 
 **Entity type expansion + extraction resilience**

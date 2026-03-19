@@ -11,12 +11,12 @@ from open_brain.extraction.prompts import (
     EXTRACTION_USER_TEMPLATE,
 )
 
-VALID_ENTITY_TYPES = {
+VALID_ENTITY_TYPES = [
     "person", "organization", "project", "concept",
     "tool", "content", "technology", "event", "decision",
-}
+]
 
-# Map common LLM-generated types to valid ones
+# Map common LLM-generated types to valid ones (fallback if schema enforcement fails)
 _TYPE_ALIASES = {
     "place": "concept", "location": "concept", "framework": "tool",
     "methodology": "concept", "platform": "tool", "service": "tool",
@@ -25,11 +25,74 @@ _TYPE_ALIASES = {
     "role": "concept", "category": "concept", "topic": "concept",
 }
 
+VALID_OBSERVATION_TYPES = [
+    "fact", "decision", "preference", "action_item", "question", "insight",
+]
+
+# JSON Schema for structured output — enforces enum on type fields
+_EXTRACTION_SCHEMA = {
+    "name": "knowledge_extraction",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "properties": {
+            "entities": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "type": {"type": "string", "enum": VALID_ENTITY_TYPES},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["name", "type", "description"],
+                    "additionalProperties": False,
+                },
+            },
+            "relations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "source": {"type": "string"},
+                        "target": {"type": "string"},
+                        "type": {"type": "string"},
+                        "description": {"type": "string"},
+                    },
+                    "required": ["source", "target", "type", "description"],
+                    "additionalProperties": False,
+                },
+            },
+            "observations": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "content": {"type": "string"},
+                        "type": {"type": "string", "enum": VALID_OBSERVATION_TYPES},
+                        "entities": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["content", "type", "entities"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        "required": ["entities", "relations", "observations"],
+        "additionalProperties": False,
+    },
+}
+
+
+_VALID_SET = set(VALID_ENTITY_TYPES)
+
 
 def normalize_entity_type(raw_type: str) -> str:
     """Clamp entity type to a valid DB value."""
     t = raw_type.lower().strip()
-    if t in VALID_ENTITY_TYPES:
+    if t in _VALID_SET:
         return t
     return _TYPE_ALIASES.get(t, "concept")
 
@@ -87,7 +150,7 @@ def extract_knowledge(
             {"role": "user", "content": user_msg},
         ],
         temperature=0.1,
-        response_format={"type": "json_object"},
+        response_format={"type": "json_schema", "json_schema": _EXTRACTION_SCHEMA},
     )
 
     raw = response.choices[0].message.content or "{}"
