@@ -1,6 +1,6 @@
 # 2BToRePensieve
 
-> **Status (2026-03-19):** Active development. See [Release Notes](#release-notes) for the latest changes.
+> **Status (2026-03-24):** Active development. See [Release Notes](#release-notes) for the latest changes.
 
 **A cloud-hosted personal knowledge graph you can talk to from any AI assistant.**
 
@@ -424,6 +424,15 @@ What's planned for the next major version:
 - **Plugin system** — drop-in connector SDK so anyone can build new input channels
 
 ## Release Notes
+
+### v0.3.4 (2026-03-24)
+
+**Telegram intent detection fix + search optimization**
+- Fixed intent classifier misrouting personal questions (calendar events, travel plans, meetings) to `ambiguous` fallback instead of `search_knowledge`. Questions like "When is my flight?" or "Where am I staying?" now correctly trigger a knowledge graph search.
+- Updated classifier prompt rules: any question (who/what/when/where/why/how) now defaults to `search_knowledge` — the knowledge graph contains personal notes, calendar events, travel plans, and conversations, so personal questions should always search.
+- Flipped ambiguity bias: "when in doubt between search_knowledge and ambiguous, prefer search_knowledge" (was: prefer ambiguous). Only greetings, single words, emojis, and prompt injection attempts trigger the fallback.
+- Optimized `searchBrain()` with batch entity/source fetching — 2 queries instead of N+1 per search result.
+- Added 7 new intent detection test cases covering personal/calendar/event questions.
 
 ### v0.3.3 (2026-03-19)
 

@@ -11,10 +11,17 @@
     {"input": "search for machine learning notes", "expected_intent": "search_knowledge", "expected_params": {"query": "machine learning"}},
     {"input": "anything on Kubernetes?", "expected_intent": "search_knowledge", "expected_params": {"query": "Kubernetes"}},
     {"input": "what have I saved about TypeScript", "expected_intent": "search_knowledge", "expected_params": {"query": "TypeScript"}},
+    {"input": "When is the concert next week?", "expected_intent": "search_knowledge", "expected_params": {"query": "concert next week"}},
+    {"input": "When do I arrive in Chicago?", "expected_intent": "search_knowledge", "expected_params": {"query": "arrive in Chicago"}},
+    {"input": "Where am I staying in Boston?", "expected_intent": "search_knowledge", "expected_params": {"query": "staying in Boston"}},
+    {"input": "What did Alice say about the roadmap?", "expected_intent": "search_knowledge", "expected_params": {"query": "Alice roadmap"}},
+    {"input": "Who did I meet with last week?", "expected_intent": "search_knowledge", "expected_params": {"query": "met with last week"}},
+    {"input": "What time is my flight?", "expected_intent": "search_knowledge", "expected_params": {"query": "flight time"}},
+    {"input": "How much sleep did I get?", "expected_intent": "search_knowledge", "expected_params": {"query": "sleep"}},
 
     {"input": "I just learned that Python 3.13 has a new JIT compiler", "expected_intent": "save_thought", "expected_params": {}},
     {"input": "Note to self: call the dentist tomorrow", "expected_intent": "save_thought", "expected_params": {}},
-    {"input": "Met with Sarah about the Q2 roadmap, she wants to prioritize mobile", "expected_intent": "save_thought", "expected_params": {}},
+    {"input": "Met with Alice about the Q2 roadmap, she wants to prioritize mobile", "expected_intent": "save_thought", "expected_params": {}},
     {"input": "Decided to use Supabase over Firebase for the new project", "expected_intent": "save_thought", "expected_params": {}},
     {"input": "Interesting article about vector databases and RAG patterns", "expected_intent": "save_thought", "expected_params": {}},
 
